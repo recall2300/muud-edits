@@ -245,7 +245,9 @@ target_include_directories(muud_media_plugin PRIVATE
 )
 target_compile_definitions(muud_media_plugin PRIVATE "NOMINMAX" "UNICODE" "_UNICODE")
 target_compile_options(muud_media_plugin PRIVATE /EHsc /W3 /wd4100)
-target_link_libraries(muud_media_plugin PRIVATE flutter)
+# flutter(INTERFACE)는 ephemeral 헤더만 주고, flutter/encodable_value.h 같은 C++ 래퍼
+# 헤더는 flutter_wrapper_app 이 PUBLIC include 로 내보낸다(러너도 같은 타깃을 링크한다).
+target_link_libraries(muud_media_plugin PRIVATE flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE muud_media_plugin)
 
 # muud_core.dll 은 워크플로우의 zip 단계에서 앱 번들 옆으로 복사한다.
