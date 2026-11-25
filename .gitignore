@@ -35,3 +35,12 @@ Thumbs.db
 
 # CI 산출물
 /dist/
+
+# CI가 `flutter create` 로 만드는 플랫폼 폴더·메타데이터 (커밋하지 않는다)
+/app/android/
+/app/windows/
+/app/macos/
+/app/ios/
+/app/linux/
+/app/web/
+/app/.metadata

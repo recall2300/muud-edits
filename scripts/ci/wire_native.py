@@ -136,6 +136,37 @@ def copy_tree(src: pathlib.Path, dst: pathlib.Path, names: list[str]) -> None:
 
 # ── Android ─────────────────────────────────────────────────────────────────
 
+ANDROID_APP_LABEL = "muud-edits"
+ANDROID_ICON_SIZES = ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"]
+
+
+def patch_android_branding(android: pathlib.Path) -> None:
+    """런처에 보이는 이름과 아이콘을 muud-edits 로 맞춘다(여러 번 실행해도 안전)."""
+    manifest = android / "app" / "src" / "main" / "AndroidManifest.xml"
+    text = read(manifest)
+    if f'android:label="{ANDROID_APP_LABEL}"' not in text:
+        if 'android:label="muud_edits"' not in text:
+            die(
+                f"{manifest.relative_to(ROOT)} 에서 android:label 앵커를 찾지 못했습니다.\n"
+                f"  --- 현재 파일 앞부분 ---\n{text[:800]}"
+            )
+        write(
+            manifest,
+            text.replace('android:label="muud_edits"', f'android:label="{ANDROID_APP_LABEL}"', 1),
+        )
+        note(f"{manifest.relative_to(ROOT)} 패치: 앱 이름 {ANDROID_APP_LABEL}")
+
+    res = android / "app" / "src" / "main" / "res"
+    for density in ANDROID_ICON_SIZES:
+        source = NATIVE / "android" / "icon" / f"mipmap-{density}" / "ic_launcher.png"
+        target = res / f"mipmap-{density}" / "ic_launcher.png"
+        if not source.exists():
+            die(f"앱 아이콘이 없습니다: {source.relative_to(ROOT)}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    note(f"런처 아이콘 교체: {len(ANDROID_ICON_SIZES)}개 밀도")
+
+
 
 def wire_android() -> None:
     android = APP / "android"
@@ -176,6 +207,9 @@ dependencies {{
         android / "app" / "src" / "main" / "kotlin" / "com" / "muud" / "edits" / "media",
         ["MuudMediaPlugin.kt", "MediaProbe.kt", "ExportEngine.kt"],
     )
+
+    # 3-b) 앱 이름·런처 아이콘 (템플릿 기본값 대신).
+    patch_android_branding(android)
 
     # 4) MainActivity 등록.
     main_activity = sorted(
