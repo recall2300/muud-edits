@@ -230,7 +230,7 @@ class ExportEngine(private val context: Context) {
                 listOf<androidx.media3.common.Effect>(
                     androidx.media3.effect.SpeedChangeEffect(speed)
                 )
-            builder.setEffects(androidx.media3.common.Effects(audioProcessors, videoEffects))
+            builder.setEffects(androidx.media3.transformer.Effects(audioProcessors, videoEffects))
         }
         return builder.build()
     }
@@ -311,7 +311,13 @@ class ExportEngine(private val context: Context) {
         val holder = ProgressHolder()
         val runnable = object : Runnable {
             override fun run() {
-                val percent = if (active.getProgress(holder)) holder.progress else -1
+                // Transformer.getProgress()는 @ProgressState int를 돌려준다(1.5.x).
+                val progressState = active.getProgress(holder)
+                val percent = if (progressState == Transformer.PROGRESS_STATE_AVAILABLE) {
+                    holder.progress
+                } else {
+                    -1
+                }
                 if (percent >= 0) {
                     val completed = (totalFrames * percent / 100f).toInt()
                     emit(
