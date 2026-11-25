@@ -168,6 +168,36 @@ def patch_android_branding(android: pathlib.Path) -> None:
 
 
 
+def patch_android_repositories(android: pathlib.Path) -> None:
+    """Maven Central 앞에 Google 미러를 두어 CI 에서의 429(rate limit)를 피한다.
+
+    GitHub Actions 러너가 `repo.maven.apache.org` 에서 429 를 받으면 Gradle 이
+    플러그인 해석 단계에서 바로 죽는다. Google이 운영하는 Maven Central 미러를
+    먼저 시도하게 하면 이 실패가 사라진다(미러에 없으면 다음 저장소로 넘어간다).
+    """
+    mirror = '        maven("https://maven-central.storage-download.googleapis.com/maven2/")'
+
+    settings = android / "settings.gradle.kts"
+    if mirror in read(settings):
+        note(f"{settings.relative_to(ROOT)} 는 이미 미러가 있습니다(건너뜀)")
+    else:
+        insert_after(
+            settings,
+            "    includeBuild(\"$flutterSdkPath/packages/flutter_tools/gradle\")\n\n    repositories {\n",
+            mirror + "\n",
+        )
+
+    root_gradle = android / "build.gradle.kts"
+    if mirror in read(root_gradle):
+        note(f"{root_gradle.relative_to(ROOT)} 는 이미 미러가 있습니다(건너뜀)")
+    else:
+        insert_after(
+            root_gradle,
+            "allprojects {\n    repositories {\n",
+            mirror + "\n",
+        )
+
+
 def wire_android() -> None:
     android = APP / "android"
     if not android.is_dir():
@@ -210,6 +240,9 @@ dependencies {{
 
     # 3-b) 앱 이름·런처 아이콘 (템플릿 기본값 대신).
     patch_android_branding(android)
+
+    # 3-c) Maven Central 미러(GitHub 러너가 429 Too Many Requests 를 맞는 경우 대비).
+    patch_android_repositories(android)
 
     # 4) MainActivity 등록.
     main_activity = sorted(
