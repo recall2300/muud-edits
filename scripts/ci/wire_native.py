@@ -267,7 +267,7 @@ target_link_libraries(${BINARY_NAME} PRIVATE muud_media_plugin)
         window_cpp,
         "  RegisterPlugins(flutter_controller_->engine());\n",
         "  // muud 미디어 채널 등록 (scripts/ci/wire_native.py)\n"
-        "  muud::MuudMediaPlugin::RegisterWithRegistrar(flutter_controller_->engine());\n",
+        "  MuudMediaPlugin::RegisterWithRegistrar(flutter_controller_->engine());\n",
     )
 
 

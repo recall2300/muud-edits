@@ -30,6 +30,11 @@
 
 using nlohmann::json;
 
+// MuudMediaPlugin 은 muud 네임스페이스 밖(전역)에 선언되어 있다.
+// 멤버 정의에서 쓰는 muud 별칭을 전역으로 끌어온다.
+using EncodableMap = flutter::EncodableMap;
+using EncodableValue = flutter::EncodableValue;
+
 namespace muud {
 namespace {
 
@@ -879,7 +884,7 @@ void MuudMediaPlugin::OnEvent(const EncodableMap& payload) {
     // 아직 창 핸들을 못 얻었으면 다음 메서드 호출 때 flush된다.
     return;
   }
-  PostMessage(hwnd_, kMuudEventMessage, 0, 0);
+  PostMessage(hwnd_, muud::kMuudEventMessage, 0, 0);
 }
 
 void MuudMediaPlugin::FlushPendingEvents() {
@@ -898,7 +903,7 @@ void MuudMediaPlugin::FlushPendingEvents() {
 std::optional<LRESULT> MuudMediaPlugin::OnWindowProc(HWND hwnd, UINT message,
                                                      WPARAM wparam, LPARAM lparam) {
   hwnd_ = hwnd;
-  if (message == kMuudEventMessage) {
+  if (message == muud::kMuudEventMessage) {
     FlushPendingEvents();
     return 0;
   }
@@ -970,7 +975,7 @@ void MuudMediaPlugin::HandleMethodCall(
     info[flutter::EncodableValue("api")] =
         flutter::EncodableValue("FFmpeg process pipeline");
     info[flutter::EncodableValue("engine")] =
-        flutter::EncodableValue(GetEnvOr("MUUD_FFMPEG_ENGINE", "ffmpeg"));
+        flutter::EncodableValue(muud::GetEnvOr("MUUD_FFMPEG_ENGINE", "ffmpeg"));
     info[flutter::EncodableValue("supports_export")] = flutter::EncodableValue(true);
     info[flutter::EncodableValue("supports_text_burn_in")] =
         flutter::EncodableValue(true);
