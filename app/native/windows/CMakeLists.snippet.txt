@@ -1,0 +1,44 @@
+# Windows(FFmpeg) 플러그인 CMake 연결 예시
+#
+# `flutter create --platforms=windows` 후의 `windows/runner/CMakeLists.txt`에
+# 아래 내용을 해당 위치에 맞춰 추가한다. (파일 경로는 복사한 위치에 맞춘다.)
+#
+# 1) nlohmann/json (single header)
+# ---------------------------------------------------------------------------
+include(FetchContent)
+FetchContent_Declare(
+  nlohmann_json
+  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+)
+FetchContent_MakeAvailable(nlohmann_json)
+#
+# (네트워크가 막힌 환경이면 json.hpp를
+#  windows/runner/muud/third_party/nlohmann/json.hpp 로 복사해 include 경로만 잡아도 된다.)
+
+# 2) 플러그인 소스와 include
+# ---------------------------------------------------------------------------
+target_sources(${BINARY_NAME} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/muud/muud_media_plugin.cpp"
+)
+
+target_include_directories(${BINARY_NAME} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/muud"
+)
+
+target_link_libraries(${BINARY_NAME} PRIVATE
+  nlohmann_json::nlohmann_json
+)
+
+# 3) 등록 (windows/runner/flutter_window.cpp)
+# ---------------------------------------------------------------------------
+# #include "muud/muud_media_plugin.h"
+# ...
+# RegisterPlugins(flutter_controller_->engine());
+# MuudMediaPlugin::RegisterWithRegistrar(flutter_controller_->engine());
+#
+# 4) 배포
+# ---------------------------------------------------------------------------
+# ffmpeg.exe / ffprobe.exe 를 빌드 출력(앱 exe 옆)에 복사한다.
+# 예: install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/muud/ffmpeg.exe"
+#                   "${CMAKE_CURRENT_SOURCE_DIR}/muud/ffprobe.exe"
+#              DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/runner/$<CONFIGURATION>")

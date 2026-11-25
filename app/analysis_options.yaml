@@ -1,0 +1,21 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  language:
+    strict-casts: true
+    strict-raw-types: true
+  exclude:
+    # flutter_rust_bridge_codegen이 생성하는 코드는 검사하지 않는다.
+    - lib/src/rust/**
+    # 로컬/CI에서 flutter create로 만드는 플랫폼 폴더와 빌드 산출물.
+    - build/**
+    - android/**
+    - ios/**
+    - windows/**
+    - macos/**
+
+linter:
+  rules:
+    prefer_single_quotes: true
+    always_declare_return_types: true
+    unawaited_futures: true

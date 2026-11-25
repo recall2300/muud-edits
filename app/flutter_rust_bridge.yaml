@@ -1,0 +1,14 @@
+# flutter_rust_bridge_codegen 설정 (v2)
+#
+#   dart run flutter_rust_bridge_codegen generate
+#
+# `rust_input`은 크레이트 이름이 아니라 "브리지로 노출할 모듈 경로"다.
+# rust_core의 lib.rs에 `pub mod bridge;`가 있으므로 `crate::bridge`를 지정한다.
+rust_input: crate::bridge
+rust_root: ../rust_core
+dart_output: lib/src/rust
+# Rust 코어를 빌드해 앱에 넣는 패키지 (carapace 대체, FRB 2.x 표준 방식)
+rust_builder_output: rust_builder
+
+# 편의: 생성되는 Dart 클래스 이름 규칙
+dart_enums_style: true

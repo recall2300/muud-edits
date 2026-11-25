@@ -1,0 +1,35 @@
+name: muud_edits
+description: 오픈소스 크로스플랫폼 숏폼 영상 편집기 (Flutter UI + Rust 코어)
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  # file_picker 13.x 가 Flutter 3.38+/Dart 3.10+ 를 요구한다.
+  # CI는 .github/workflows/ci-release.yml 의 FLUTTER_VERSION(3.50.1)로 검증한다.
+  sdk: ">=3.10.0 <4.0.0"
+  flutter: ">=3.50.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Rust 코어 브리지 (코드 생성 후 lib/src/rust/* 가 생성된다)
+  flutter_rust_bridge: ^2.13.0
+
+  # 파일/경로
+  path_provider: ^2.1.5
+  file_picker: ^13.0.0
+
+  # 로그/디버깅
+  logging: ^1.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  # 2단계(자동 자막/필터)에서 셰이더와 폰트를 추가한다.
+  # shaders:
+  #   - shaders/cutout.frag
