@@ -227,25 +227,28 @@ class _GapSlot extends StatelessWidget {
         ),
       ),
       child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Icon(
-              icon,
-              size: 30,
-              color: EditorPalette.textMuted.withValues(alpha: 0.5),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              title,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: EditorPalette.textMuted.withValues(alpha: 0.8),
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(
+                icon,
+                size: 30,
+                color: EditorPalette.textMuted.withValues(alpha: 0.5),
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: EditorPalette.textMuted.withValues(alpha: 0.8),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

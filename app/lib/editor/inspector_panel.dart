@@ -78,6 +78,24 @@ class InspectorPanel extends StatelessWidget {
               '${formatTimecode(clip.offsetMs)} → ${formatTimecode(clip.endOffsetMs)} (${formatTimecode(clip.durationMs)})',
         ),
         const SizedBox(height: 10),
+        if (clip.kind != 'text') ...<Widget>[
+          _TrimSlider(
+            label: '시작 자르기',
+            valueMs: clip.startMs,
+            minMs: 0,
+            maxMs: clip.endMs - 34 > 0 ? clip.endMs - 34 : 1,
+            onCommitMs: (int value) => controller.trimClip(startMs: value),
+          ),
+          _TrimSlider(
+            label: '끝 자르기',
+            valueMs: clip.endMs,
+            minMs: clip.startMs + 34,
+            maxMs: (clip.sourceDurationMs ?? clip.endMs) > clip.startMs + 34
+                ? (clip.sourceDurationMs ?? clip.endMs)
+                : clip.startMs + 35,
+            onCommitMs: (int value) => controller.trimClip(endMs: value),
+          ),
+        ],
         _ValueSlider(
           label: '속도',
           value: clip.speed,
@@ -132,6 +150,88 @@ class InspectorPanel extends StatelessWidget {
               onTap: controller.deleteSelected,
             ),
           ],
+        ),
+      ],
+    );
+  }
+}
+
+/// 소스 인점/아웃점 슬라이더(드래그 중 로컬 값, 손을 떼면 커맨드 한 번).
+class _TrimSlider extends StatefulWidget {
+  const _TrimSlider({
+    required this.label,
+    required this.valueMs,
+    required this.minMs,
+    required this.maxMs,
+    required this.onCommitMs,
+  });
+
+  final String label;
+  final int valueMs;
+  final int minMs;
+  final int maxMs;
+  final Future<void> Function(int valueMs) onCommitMs;
+
+  @override
+  State<_TrimSlider> createState() => _TrimSliderState();
+}
+
+class _TrimSliderState extends State<_TrimSlider> {
+  late double _draft = widget.valueMs.toDouble();
+
+  @override
+  void didUpdateWidget(covariant _TrimSlider oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.valueMs != widget.valueMs) {
+      _draft = widget.valueMs.toDouble();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double min = widget.minMs.toDouble();
+    final double max = widget.maxMs.toDouble() <= min
+        ? min + 1
+        : widget.maxMs.toDouble();
+    return Row(
+      children: <Widget>[
+        SizedBox(
+          width: 64,
+          child: Text(
+            widget.label,
+            style: const TextStyle(
+              color: EditorPalette.textMuted,
+              fontSize: 10,
+            ),
+          ),
+        ),
+        Expanded(
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 2,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+            ),
+            child: Slider(
+              value: _draft.clamp(min, max).toDouble(),
+              min: min,
+              max: max,
+              onChanged: (double value) => setState(() => _draft = value),
+              onChangeEnd: (double value) => widget.onCommitMs(value.round()),
+            ),
+          ),
+        ),
+        SizedBox(
+          width: 72,
+          child: Text(
+            formatTimecode(_draft.round()),
+            textAlign: TextAlign.right,
+            style: const TextStyle(
+              color: EditorPalette.text,
+              fontSize: 9,
+              fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+            ),
+          ),
         ),
       ],
     );

@@ -363,6 +363,7 @@ class ClipView {
     required this.opacity,
     required this.enabled,
     required this.textContent,
+    this.sourceDurationMs,
   });
 
   final String id;
@@ -376,6 +377,9 @@ class ClipView {
   final double opacity;
   final bool enabled;
   final String? textContent;
+
+  /// 프로브로 알아낸 소스 전체 길이(없으면 트림 범위는 현재 구간 기준).
+  final int? sourceDurationMs;
 
   /// 재생 속도를 반영한 타임라인 점유 길이(코어와 같은 계산).
   int get durationMs {
@@ -418,6 +422,9 @@ class ClipView {
       opacity: _double(json['opacity'], 1),
       enabled: _bool(json['enabled'], true),
       textContent: content,
+      sourceDurationMs: json['source_duration_ms'] is num
+          ? (json['source_duration_ms'] as num).round()
+          : null,
     );
   }
 }

@@ -8,7 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:muud_edits/bridge_api.dart';
 import 'package:muud_edits/editor/editor_screen.dart';
+import 'package:muud_edits/editor/preview_engine.dart';
 import 'package:muud_edits/media/media_platform_bridge.dart';
+import 'package:muud_edits/models.dart';
 import 'package:muud_edits/rust_core_loader.dart';
 import 'package:muud_edits/theme.dart';
 
@@ -213,6 +215,29 @@ void main() {
     expect(find.text('공유'), findsOneWidget);
     expect(find.text('열기'), findsOneWidget);
     expect(find.textContaining('저장 위치'), findsOneWidget);
+  });
+
+  testWidgets('트림 슬라이더가 소스 구간을 자르고 프리뷰 매핑에 반영된다', (
+    WidgetTester tester,
+  ) async {
+    final EditorController controller = await _pumpEditor(tester);
+    await controller.addMediaFile('/media/first.mp4');
+    await tester.pumpAndSettle();
+
+    final ClipView clip = controller.state!.tracks.first.clips.first;
+    controller.selectClip(clip.id);
+    await tester.pumpAndSettle();
+    expect(find.text('시작 자르기'), findsOneWidget);
+
+    await controller.trimClip(startMs: 1000);
+    await tester.pumpAndSettle();
+
+    final ClipView trimmed = controller.state!.tracks.first.clips.first;
+    expect(controller.error, isNull);
+    expect(trimmed.startMs, 1000);
+    expect(trimmed.durationMs, 3000);
+    // 재생 헤드 0의 프레임은 이제 소스 1000ms다.
+    expect(sourceTimeFor(trimmed, 0), 1000);
   });
 
   testWidgets('코어가 없으면 안내와 다시 시도 버튼이 뜬다', (WidgetTester tester) async {

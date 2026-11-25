@@ -316,6 +316,44 @@ class EditorController extends ChangeNotifier {
     }
   }
 
+  /// 선택 클립의 소스 구간을 직접 자른다(인점/아웃점).
+  Future<void> trimClip({int? startMs, int? endMs}) async {
+    final ({TrackView track, ClipView clip})? hit = selected;
+    if (hit == null) {
+      return;
+    }
+    final int minGap = frameMs;
+    final int sourceEnd = hit.clip.sourceDurationMs ??
+        (hit.clip.endMs > hit.clip.startMs ? hit.clip.endMs : hit.clip.endMs);
+    int? nextStart = startMs;
+    int? nextEnd = endMs;
+    if (nextStart != null) {
+      final int upper = (nextEnd ?? hit.clip.endMs) - minGap;
+      nextStart = nextStart.clamp(0, upper < 0 ? 0 : upper);
+      if (nextStart == hit.clip.startMs) {
+        nextStart = null;
+      }
+    }
+    if (nextEnd != null) {
+      final int lower = (nextStart ?? hit.clip.startMs) + minGap;
+      nextEnd = nextEnd.clamp(lower, sourceEnd > lower ? sourceEnd : lower);
+      if (nextEnd == hit.clip.endMs) {
+        nextEnd = null;
+      }
+    }
+    if (nextStart == null && nextEnd == null) {
+      return;
+    }
+    await apply(
+      Commands.trimClip(
+        trackId: hit.track.id,
+        clipId: hit.clip.id,
+        startMs: nextStart,
+        endMs: nextEnd,
+      ),
+    );
+  }
+
   Future<void> setSpeed(double speed) async {
     final ({TrackView track, ClipView clip})? hit = selected;
     if (hit == null) {

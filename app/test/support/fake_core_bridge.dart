@@ -108,6 +108,14 @@ class FakeCoreBridge implements CoreBridge {
         _push('클립 삭제');
         _removeClip('${command['track_id']}', '${command['clip_id']}');
         return _envelope();
+      case 'trim_clip':
+        _push('클립 트림');
+        _trimClip(
+          '${command['track_id']}',
+          '${command['clip_id']}',
+          command,
+        );
+        return _envelope();
       case 'set_clip_text':
         _push('텍스트 수정');
         _setClipText(
@@ -167,6 +175,7 @@ class FakeCoreBridge implements CoreBridge {
       'volume': 1,
       'opacity': 1,
       'enabled': true,
+      if (sourceDurationMs != null) 'source_duration_ms': sourceDurationMs,
     });
     return _envelope(createdId: id);
   }
@@ -505,6 +514,26 @@ class FakeCoreBridge implements CoreBridge {
       }
       if (patch['end_ms'] != null) {
         item['end_ms'] = (patch['end_ms'] as num).toInt();
+      }
+      return;
+    }
+  }
+
+  void _trimClip(String trackId, String clipId, Map<dynamic, dynamic> command) {
+    final Map<String, dynamic> track = _trackById(trackId);
+    for (final dynamic raw in (track['clips'] as List)) {
+      final Map<String, dynamic> clip = (raw as Map).cast<String, dynamic>();
+      if (clip['id'] != clipId) {
+        continue;
+      }
+      if (command['start_ms'] != null) {
+        clip['start_ms'] = (command['start_ms'] as num).toInt();
+      }
+      if (command['end_ms'] != null) {
+        clip['end_ms'] = (command['end_ms'] as num).toInt();
+      }
+      if (command['timeline_offset_ms'] != null) {
+        clip['timeline_offset_ms'] = (command['timeline_offset_ms'] as num).toInt();
       }
       return;
     }
