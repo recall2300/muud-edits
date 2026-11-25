@@ -72,11 +72,12 @@ python3 scripts/ci/wire_native.py ios       # Swift 병합 + AppDelegate 등록
 네이티브 라이브러리가 맞물리는지 **플랫폼별로 빌드**해서 확인한다.
 Android 크로스 빌드의 C 컴파일(dart-sys)은 `.cargo/config.toml` 이
 `scripts/ci/android-cc.sh`(NDK clang 탐색 래퍼)로 처리하므로, 워크플로가 NDK bin 을
-PATH 에 넣지 않아도 된다.
+PATH 에 넣지 않아도 된다. 같은 파일이 Android `libmuud_core.so` 를 16KB 페이지 정렬로
+링크한다(Android 15+ 16KB 기기 호환).
 
 | 플랫폼 | 타깃 | 링커/비고 |
 |---|---|---|
-| Android | `aarch64-linux-android`, `armv7-linux-androideabi`, `x86_64-linux-android` | NDK clang `*-android26-clang` (`minSdk 26` 과 일치) |
+| Android | `aarch64-linux-android`, `armv7-linux-androideabi`, `x86_64-linux-android` | NDK clang `*-android26-clang` (`minSdk 26` 과 일치), `.cargo/config.toml` 로 16KB 페이지 정렬 |
 | Windows | `x86_64-pc-windows-msvc` | 기본 MSVC 툴체인, `muud_core.dll` |
 | macOS | `aarch64-apple-darwin`, `x86_64-apple-darwin` | `lipo` 로 universal dylib |
 | iOS | `aarch64-apple-ios` | `staticlib`(`muud_core.a`) |

@@ -16,3 +16,18 @@ AR_aarch64_linux_android = { value = "scripts/ci/android-ar.sh", relative = true
 AR_armv7_linux_androideabi = { value = "scripts/ci/android-ar.sh", relative = true }
 AR_x86_64_linux_android = { value = "scripts/ci/android-ar.sh", relative = true }
 AR_i686_linux_android = { value = "scripts/ci/android-ar.sh", relative = true }
+
+# Android 15+ 의 16KB 페이지 크기 기기에서도 로드되도록 ELF 정렬을 16KB 로 맞춘다.
+# (NDK r28+ 가 기본이지만, 러너의 NDK 버전에 의존하지 않도록 명시한다.)
+# 4KB 페이지 기기에서는 그대로 동작한다.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.i686-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
