@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -24,6 +25,10 @@ APP = ROOT / "app"
 
 ORG = "com.muud.edits"
 PROJECT_NAME = "muud_edits"
+
+# Windows 에서는 flutter 가 `flutter.bat` 이라 subprocess 가 그냥은 찾지 못한다.
+# shutil.which 는 PATHEXT 를 적용하므로 .bat 까지 찾아준다.
+FLUTTER = shutil.which("flutter") or shutil.which("flutter.bat") or "flutter"
 
 
 def run(cmd: list[str], cwd: pathlib.Path) -> None:
@@ -65,7 +70,7 @@ def main() -> None:
 
     run(
         [
-            "flutter",
+            FLUTTER,
             "create",
             f"--platforms={','.join(platforms)}",
             f"--org={ORG}",
