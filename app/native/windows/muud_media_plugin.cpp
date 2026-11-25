@@ -15,6 +15,8 @@
 
 #include <windows.h>
 
+#include <flutter/standard_method_codec.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>

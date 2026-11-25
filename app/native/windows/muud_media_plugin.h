@@ -18,7 +18,9 @@
 #include <flutter/encodable_value.h>
 #include <flutter/event_channel.h>
 #include <flutter/method_channel.h>
+#include <flutter/method_result.h>
 #include <flutter/plugin_registrar_windows.h>
+#include <flutter/plugin_registry.h>
 
 #include <atomic>
 #include <cstdint>
@@ -96,10 +98,11 @@ class MuudMediaPlugin : public flutter::Plugin {
   MuudMediaPlugin();
   ~MuudMediaPlugin() override;
 
+  // Flutter 3.50의 flutter::Plugin 은 빈 베이스 클래스라 HandleMethodCall 을
+  // override 하지 않는다(채널 핸들러 람다에서 직접 호출한다).
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue>& method_call,
-      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result)
-      override;
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
  private:
   class EventStreamHandler;
