@@ -14,6 +14,14 @@
 
 from __future__ import annotations
 
+import sys
+
+# Windows 러너의 기본 stdout 은 cp1252 라서 한글 로그가 UnicodeEncodeError 로 죽는다.
+# CI 로그를 UTF-8 로 고정한다.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import argparse
 import pathlib
 import shutil

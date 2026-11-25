@@ -18,6 +18,14 @@ CI에는 IDE가 없으므로, 생성된 템플릿 파일을 앵커 기준으로 
 
 from __future__ import annotations
 
+import sys
+
+# Windows 러너의 기본 stdout 은 cp1252 라서 한글 로그가 UnicodeEncodeError 로 죽는다.
+# CI 로그를 UTF-8 로 고정한다.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import argparse
 import pathlib
 import shutil
@@ -353,11 +361,15 @@ def wire_ios() -> None:
             f"  --- {app_delegate.relative_to(ROOT)} ---\n{text[:1500]}"
         )
     anchor = f"GeneratedPluginRegistrant.register(with: {registry})\n"
+    # iOS 의 FlutterPluginRegistry.registrar(forPlugin:) 는 optional 을 돌려준다
+    # (macOS 의 FlutterViewController 쪽은 non-optional 이라 그대로 넘긴다).
     insert_after(
         app_delegate,
         anchor,
         f'    // muud 미디어 채널 등록 (scripts/ci/wire_native.py)\n'
-        f'    MuudMediaPlugin.register(with: {registry}.registrar(forPlugin: "MuudMediaPlugin"))\n',
+        f'    if let muudRegistrar = {registry}.registrar(forPlugin: "MuudMediaPlugin") {{\n'
+        f'      MuudMediaPlugin.register(with: muudRegistrar)\n'
+        f'    }}\n',
     )
 
     add_plist_key(

@@ -110,7 +110,14 @@ enum AVMediaProbe {
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
         let time = CMTime(value: CMTimeValue(max(0, atMs)), timescale: 1000)
-        let (cgImage, _) = try await generator.image(at: time)
+        // `AVAssetImageGenerator.image(at:)`는 iOS 16 / macOS 13+ 에서만 쓸 수 있다.
+        // 그 이전 배포 타깃에서는 동기 API로 폴백한다.
+        let cgImage: CGImage
+        if #available(iOS 16.0, macOS 13.0, *) {
+            cgImage = try await generator.image(at: time).image
+        } else {
+            cgImage = try generator.copyCGImage(at: time, actualTime: nil)
+        }
         return try jpegData(from: cgImage, quality: 0.7)
     }
 
