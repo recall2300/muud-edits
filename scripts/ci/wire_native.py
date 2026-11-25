@@ -423,6 +423,9 @@ def add_ios_core_link_flags(pbxproj: pathlib.Path) -> None:
         '\t\t\t\t\t"-force_load",\n'
         '\t\t\t\t\t"$(SRCROOT)/../../dist/native/libmuud_core.a",\n'
         "\t\t\t\t);\n"
+        # Dart 는 런타임에 심볼 이름으로 코어를 찾으므로(dlsym), Swift 쪽에서 참조하지 않는
+        # Rust 심볼이 dead-strip 되면 안 된다. Release 기본값(YES)을 끈다.
+        "\t\t\t\tDEAD_CODE_STRIPPING = NO;\n"
     )
     text = text.replace(anchor, anchor + flags)
     write(pbxproj, text)
