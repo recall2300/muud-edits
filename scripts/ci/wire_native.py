@@ -237,14 +237,11 @@ target_include_directories(muud_media_plugin PRIVATE
 )
 target_compile_definitions(muud_media_plugin PRIVATE "NOMINMAX" "UNICODE" "_UNICODE")
 target_compile_options(muud_media_plugin PRIVATE /EHsc /W3 /wd4100)
-target_link_libraries(muud_media_plugin PRIVATE flutter flutter_wrapper_app)
+target_link_libraries(muud_media_plugin PRIVATE flutter)
 target_link_libraries(${BINARY_NAME} PRIVATE muud_media_plugin)
 
-# Rust 코어(cdylib)가 있으면 앱 번들에 함께 넣는다.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/muud/muud_core.dll")
-  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/muud/muud_core.dll"
-    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
-endif()
+# muud_core.dll 은 워크플로우의 zip 단계에서 앱 번들 옆으로 복사한다.
+# (여기 install()을 쓰면 INSTALL_BUNDLE_LIB_DIR 이 아직 정의되기 전이라 DESTINATION 이 비어 실패한다.)
 """,
         token="muud_media_plugin",
     )
