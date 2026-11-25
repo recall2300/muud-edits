@@ -263,7 +263,11 @@ class VideoPlayerPreviewMedia implements PreviewMedia {
 
   @override
   Future<void> setVolume(double volume) async {
-    _volume = volume.clamp(0.0, 1.0);
+    final double next = volume.clamp(0.0, 1.0);
+    if ((next - _volume).abs() < 0.001) {
+      return;
+    }
+    _volume = next;
     await _controller.setVolume(_volume);
   }
 
@@ -327,6 +331,9 @@ class PreviewEngine extends ChangeNotifier {
   /// 스크럽 시 "이미 그 위치"로 볼 허용 오차.
   static const int seekThresholdMs = 90;
 
+  /// 재생 중 플레이어를 따라잡는 허용 오차(이보다 크게 벌어졌을 때만 시크).
+  static const int playingDriftLimitMs = 900;
+
   final EditorController _controller;
   final PreviewMediaFactory _factory;
   final int Function() _clockMs;
@@ -339,11 +346,16 @@ class PreviewEngine extends ChangeNotifier {
   String? _visualPath;
   String? _audioPath;
 
+  /// 새로 연 미디어는 첫 동기화에서 반드시 목표 위치로 시크한다.
+  bool _freshVisual = false;
+  bool _freshAudio = false;
+
   /// [_visual]이 준비 중일 때의 세대 번호(뒤늦게 도착한 열기를 버린다).
   int _openGeneration = 0;
 
   bool _playing = false;
   bool _opening = false;
+  bool _syncScheduled = false;
   bool _disposed = false;
   int _anchorTimeline = 0;
   int _anchorClock = 0;
@@ -484,7 +496,17 @@ class PreviewEngine extends ChangeNotifier {
         _reanchor();
       }
     }
-    unawaited(_sync());
+    // 50fps 틱마다 async 작업을 새로 만들지 않도록 마이크로태스크 하나로 합친다.
+    if (_syncScheduled) {
+      return;
+    }
+    _syncScheduled = true;
+    scheduleMicrotask(() {
+      _syncScheduled = false;
+      if (!_disposed) {
+        unawaited(_sync());
+      }
+    });
   }
 
   /// 현재 상태에 맞춰 플레이어를 맞춘다.
@@ -508,12 +530,14 @@ class PreviewEngine extends ChangeNotifier {
 
     // 영상 위치 맞추기.
     final PreviewMedia? visual = _visual;
+    final bool forceVisual = force || _freshVisual;
+    _freshVisual = false;
     if (visual != null && visual.isReady && sel.visualClip != null) {
       await _syncPosition(
         media: visual,
         clip: sel.visualClip!,
         targetSourceMs: sel.sourceMs,
-        force: force,
+        force: forceVisual,
       );
       await _safeCall(() => visual.setVolume(sel.volume));
       await _safeCall(() => visual.setSpeed(sel.visualClip!.speed));
@@ -524,12 +548,14 @@ class PreviewEngine extends ChangeNotifier {
 
     // 별도 오디오 클립도 같은 타임라인 시각으로 맞춘다.
     final PreviewMedia? audio = _audio;
+    final bool forceAudio = force || _freshAudio;
+    _freshAudio = false;
     if (audio != null && audio.isReady && sel.audioClip != null) {
       await _syncPosition(
         media: audio,
         clip: sel.audioClip!,
         targetSourceMs: sourceTimeFor(sel.audioClip!, atMs),
-        force: force,
+        force: forceAudio,
       );
       await _safeCall(() => audio.setVolume(sel.audioVolume));
       await _safeCall(() => audio.setSpeed(sel.audioClip!.speed));
@@ -579,6 +605,7 @@ class PreviewEngine extends ChangeNotifier {
       }
       _visual = media;
       _visualPath = path;
+      _freshVisual = true;
       _error = null;
       _repaint.value++;
     } on Object catch (error) {
@@ -614,6 +641,7 @@ class PreviewEngine extends ChangeNotifier {
       }
       _audio = media;
       _audioPath = path;
+      _freshAudio = true;
       _repaint.value++;
     } on Object catch (error) {
       _error ??= _describe(error);
@@ -621,6 +649,9 @@ class PreviewEngine extends ChangeNotifier {
   }
 
   /// 플레이어 위치를 목표 소스 시각에 맞춘다(드리프트/스크럽).
+  ///
+  /// 재생 중에는 플레이어가 자기 속도로 재생되고 있으므로 **작은 오차로 시크하지
+  /// 않는다**(잦은 시크는 재생을 끊긴다). 크게 벌어졌을 때만 플레이어를 따라잡힌다.
   Future<void> _syncPosition({
     required PreviewMedia media,
     required ClipView clip,
@@ -632,10 +663,9 @@ class PreviewEngine extends ChangeNotifier {
       return;
     }
     final int current = media.positionMs;
-    final bool far = (current - targetSourceMs).abs() > seekThresholdMs;
-    final bool stalled = _playing &&
-        (current - targetSourceMs).abs() > driftLimitMs;
-    if (!force && !far && !stalled) {
+    final int limit = _playing ? playingDriftLimitMs : seekThresholdMs;
+    final bool needSeek = force || (current - targetSourceMs).abs() > limit;
+    if (!needSeek) {
       return;
     }
     _seekInFlight = true;
@@ -697,6 +727,9 @@ class PreviewEngine extends ChangeNotifier {
 
   @override
   void dispose() {
+    if (_disposed) {
+      return;
+    }
     _disposed = true;
     _ticker?.cancel();
     _ticker = null;

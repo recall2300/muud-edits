@@ -213,28 +213,32 @@ pub fn export_plan(state_json: &str, settings_json: &str, platform_id: &str) -> 
 
 ---
 
-## 7. 재생(프리뷰) 파이프라인 🔜
+## 7. 재생(프리뷰) 파이프라인 ✅(v0.1.3)
 
-1단계 프리뷰는 **"현재 재생 헤드 1프레임"** 만 정확하면 된다.
-`Project::layers_at(t)` ✅ 가 그 프레임에 그릴 레이어(트랙·클립·소스 시각·게인·텍스트)를
-아래→위 순서로 돌려준다. 렌더러는 이 목록만 보고 합성한다.
+v0.1.3은 **"타임라인 시각 하나 → 실제 재생 중인 클립 하나"** 로 단순화했다.
+전체 프레임 합성기(GPU 합성·프록시 캐시)는 2단계 과제로 남기고, 지금은 사용자가
+가장 먼저 기대하는 **영상 프레임과 소리**를 확실하게 재생하는 데 집중했다.
 
 ```text
 playhead t
-  └ layers_at(t) → [ video(clp-1, src 4.20s, opacity 1.0),
-                     overlay(text "상하이", opacity 0.9) ]
-        ├ (1) 각 레이어 디코드: 플랫폼 디코더 → GPU 텍스처
-        │      · 캐시: 앞뒤 ±2초 프레임 링 버퍼
-        │      · 프록시: 720p/540p H.264를 프로젝트 옆 `.oecache/`에 생성
-        ├ (2) 합성: Metal/D3D11/GLES에서 레이어 순서대로 드로우 + 텍스트 아틀라스
-        ├ (3) Flutter Texture로 전달 (외부 텍스처, 복사 없음)
-        └ (4) 오디오: 트랙 gain × 클립 volume × 페이드 → 믹서(48kHz 스테레오)
+  └ resolvePreviewSelection(state, t)        ← 순수 함수(lib/editor/preview_engine.dart)
+        · visualClip: 위 트랙 우선 영상/이미지 클립(숨김·비활성 제외)
+        · sourceMs:  start_ms + (t - offset) × speed   (코어와 같은 규칙)
+        · audioClip: 별도 오디오 트랙 클립(있으면 동시 재생)
+        ├ (1) 플랫폼 플레이어 하나에 해당 파일을 물린다
+        │      video_player: Android ExoPlayer · iOS/macOS AVFoundation
+        │      video_player_win: Windows Media Foundation
+        ├ (2) 플레이어 위치를 sourceMs 로 시크(스크럽·클립 전환)
+        ├ (3) 재생 헤드는 **벽시계 1배**로 흐르고, 플레이어와 크게 벌어지면 다시 시크
+        └ (4) 텍스트/자막은 Dart 오버레이로 시각 범위에 맞춰 그린다
 ```
 
-* **프록시 우선**: 원본이 4K/HDR이면 720p 프록시를 만들어 타임라인 스크럽에 쓴다.
-  내보내기만 원본을 읽는다 → 스크럽 60fps, 메모리 절약.
-* **오디오 클록**: 오디오가 마스터. 비디오는 오디오 시각에 맞춰 드롭/리핏한다.
-* `layers_at`이 순수 함수라 프리뷰와 내보내기가 **같은 로직**을 공유한다(결과 불일치 방지).
+* **클립 경계**: 다음 클립을 새로 열기 때문에 짧은 끊김이 있다(프리로드/합성은 2단계).
+* **배속·볼륨**: 클립 speed는 플레이어 `playbackSpeed`, volume은 `setVolume(0~1)`로 반영.
+* **정확도 기준**: 시크 허용 오차 90ms(정지), 재생 중 900ms.
+* `resolvePreviewSelection`이 순수 함수라 단위 테스트로 트림·분할·빈 구간을 직접 검증한다.
+
+남은 2단계 과제: 여러 레이어 동시 합성, 프록시 캐시, 오디오 마스터 클록, 자막 burn-in.
 
 ---
 

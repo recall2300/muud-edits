@@ -265,10 +265,12 @@ class ExportEngine(private val context: Context) {
         }
 
         val sequences = mutableListOf(
-            EditedMediaItemSequence.Builder(videoItems).build()
+            EditedMediaItemSequence.Builder(*videoItems.toTypedArray()).build()
         )
         if (audioItems.isNotEmpty()) {
-            sequences.add(EditedMediaItemSequence.Builder(audioItems).build())
+            sequences.add(
+                EditedMediaItemSequence.Builder(*audioItems.toTypedArray()).build()
+            )
         }
         val composition = Composition.Builder(sequences).build()
 

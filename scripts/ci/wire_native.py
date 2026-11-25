@@ -35,7 +35,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 APP = ROOT / "app"
 NATIVE = APP / "native"
 
-MEDIA3_VERSION = "1.5.1"
+# video_player_android(2.13)·media3-exoplayer 가 요구하는 버전과 맞춘다.
+# (Transformer 와 common/effect 버전이 어긋나면 런타임에 NoSuchMethodError 가 난다.)
+MEDIA3_VERSION = "1.9.2"
 
 # Apple 타깃에 합쳐 넣을 Swift 소스 (의존 순서대로: 모델 → 프로브 → 엔진 → 플러그인)
 APPLE_SWIFT = [
