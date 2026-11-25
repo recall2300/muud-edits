@@ -1,0 +1,393 @@
+name: CI · Release
+
+# 트리거
+#  - main push / PR: Rust 코어 + Flutter 분석 + 4플랫폼 빌드
+#  - workflow_dispatch: 수동 실행
+#  - v* 태그 push: 위 빌드 산출물을 모아 GitHub Release 생성
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 기본은 읽기 전용. 릴리즈 잡에서만 contents: write 를 준다.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.50.1"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1) Rust 코어: 포맷 · 린트 · 테스트 (플랫폼과 무관한 순수 로직)
+  # ───────────────────────────────────────────────────────────────────────────
+  rust-core:
+    name: Rust 코어 (fmt · clippy · test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+
+      - name: rustfmt --check
+        working-directory: rust_core
+        run: cargo fmt --all -- --check
+
+      - name: clippy (경고만 보고, 실패시키지 않음)
+        working-directory: rust_core
+        run: cargo clippy --all-targets --locked
+
+      - name: cargo test
+        working-directory: rust_core
+        run: cargo test --locked --all-targets
+
+      - name: demo_project 실행 (코어 불변식 검증)
+        working-directory: rust_core
+        run: cargo run --locked --example demo_project
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2) Flutter 정적 분석 (플랫폼 폴더 없이 lib/ 만 검사)
+  # ───────────────────────────────────────────────────────────────────────────
+  flutter-analyze:
+    name: Flutter 분석
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        working-directory: app
+        run: flutter pub get
+
+      # 고정된 Flutter(3.50)에서는 `package:flutter/material.dart`가
+      # `material_ui`로 이전 중이라 info가 남는다. 오류/경고만 실패로 처리한다.
+      - name: flutter analyze
+        working-directory: app
+        run: flutter analyze --no-fatal-infos
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 3) Android APK
+  # ───────────────────────────────────────────────────────────────────────────
+  build-android:
+    name: Android (APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+
+      - name: 플랫폼 폴더 생성 (flutter create)
+        run: python3 scripts/ci/prepare_app.py android
+
+      - name: 네이티브 미디어 엔진 연결
+        run: python3 scripts/ci/wire_native.py android
+
+      - name: Rust 코어 → jniLibs (arm64-v8a · armeabi-v7a · x86_64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [ -z "$NDK_HOME" ] || [ ! -d "$NDK_HOME" ]; then
+            NDK_HOME="$(ls -d "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"/ndk/* 2>/dev/null | sort -V | tail -1)"
+          fi
+          echo "NDK: $NDK_HOME"
+          TC="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$TC/aarch64-linux-android26-clang"
+
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TC/aarch64-linux-android26-clang"
+          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$TC/armv7a-linux-androideabi26-clang"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$TC/x86_64-linux-android26-clang"
+
+          mkdir -p app/android/app/src/main/jniLibs
+          for spec in "aarch64-linux-android:arm64-v8a" "armv7-linux-androideabi:armeabi-v7a" "x86_64-linux-android:x86_64"; do
+            target="${spec%%:*}"
+            abi="${spec##*:}"
+            cargo build --manifest-path rust_core/Cargo.toml --release --locked --target "$target"
+            mkdir -p "app/android/app/src/main/jniLibs/$abi"
+            cp "rust_core/target/$target/release/libmuud_core.so" "app/android/app/src/main/jniLibs/$abi/"
+          done
+          find app/android/app/src/main/jniLibs -name '*.so' -exec ls -lh {} \;
+
+      - name: flutter build apk --release
+        working-directory: app
+        run: flutter build apk --release
+
+      - name: APK 경로 정리
+        run: |
+          mkdir -p dist
+          cp app/build/app/outputs/flutter-apk/app-release.apk dist/muud-edits-android.apk
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muud-edits-android-apk
+          path: dist/muud-edits-android.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 4) Windows (CMake/MSVC + FFmpeg 파이프라인)
+  # ───────────────────────────────────────────────────────────────────────────
+  build-windows:
+    name: Windows (zip)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+
+      - name: 플랫폼 폴더 생성 (flutter create)
+        run: python scripts/ci/prepare_app.py windows
+
+      - name: 네이티브 미디어 엔진 연결
+        run: python scripts/ci/wire_native.py windows
+
+      - name: nlohmann/json (single header)
+        shell: pwsh
+        run: |
+          $dir = "app/windows/runner/muud/nlohmann"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nlohmann/json/v3.11.3/single_include/nlohmann/json.hpp" -OutFile "$dir/json.hpp"
+          Get-Item "$dir/json.hpp" | Select-Object Length
+
+      - name: Rust 코어 (muud_core.dll)
+        run: cargo build --manifest-path rust_core/Cargo.toml --release --locked
+
+      - name: DLL 배치 (앱 번들에 포함)
+        shell: pwsh
+        run: |
+          Copy-Item rust_core/target/release/muud_core.dll app/windows/runner/muud/muud_core.dll -Force
+          Get-Item app/windows/runner/muud/muud_core.dll | Select-Object Length
+
+      - name: flutter build windows --release
+        working-directory: app
+        run: flutter build windows --release
+
+      - name: zip 패키징
+        shell: pwsh
+        run: |
+          $release = "app/build/windows/x64/runner/Release"
+          Copy-Item rust_core/target/release/muud_core.dll "$release/muud_core.dll" -Force
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$release/*" -DestinationPath "dist/muud-edits-windows-x64.zip" -Force
+          Get-Item dist/muud-edits-windows-x64.zip | Select-Object Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muud-edits-windows-x64
+          path: dist/muud-edits-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 5) macOS (AVFoundation)
+  # ───────────────────────────────────────────────────────────────────────────
+  build-macos:
+    name: macOS (zip)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+
+      - name: 플랫폼 폴더 생성 (flutter create)
+        run: python3 scripts/ci/prepare_app.py macos
+
+      - name: 네이티브 미디어 엔진 연결
+        run: python3 scripts/ci/wire_native.py macos
+
+      - name: Rust 코어 (universal dylib)
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path rust_core/Cargo.toml --release --locked --target aarch64-apple-darwin
+          cargo build --manifest-path rust_core/Cargo.toml --release --locked --target x86_64-apple-darwin
+          mkdir -p dist/native
+          lipo -create \
+            rust_core/target/aarch64-apple-darwin/release/libmuud_core.dylib \
+            rust_core/target/x86_64-apple-darwin/release/libmuud_core.dylib \
+            -output dist/native/libmuud_core.dylib
+          lipo -info dist/native/libmuud_core.dylib
+
+      - name: flutter build macos --release
+        working-directory: app
+        run: flutter build macos --release
+
+      - name: zip 패키징
+        run: |
+          set -euo pipefail
+          arch="$(uname -m)"   # arm64 또는 x86_64 러너
+          app_path="$(ls -d app/build/macos/Build/Products/Release/*.app | head -1)"
+          echo "app: $app_path (runner: $arch)"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" "dist/muud-edits-macos-$arch.zip"
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muud-edits-macos
+          path: dist/muud-edits-macos-*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muud-core-macos-dylib
+          path: dist/native/libmuud_core.dylib
+          if-no-files-found: error
+          retention-days: 14
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 6) iOS (unsigned 컴파일 검증)
+  # ───────────────────────────────────────────────────────────────────────────
+  build-ios:
+    name: iOS (unsigned)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust_core
+
+      - name: 플랫폼 폴더 생성 (flutter create)
+        run: python3 scripts/ci/prepare_app.py ios
+
+      - name: 네이티브 미디어 엔진 연결
+        run: python3 scripts/ci/wire_native.py ios
+
+      - name: Rust 코어 (iOS staticlib)
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path rust_core/Cargo.toml --release --locked --target aarch64-apple-ios
+          mkdir -p dist/native
+          cp rust_core/target/aarch64-apple-ios/release/libmuud_core.a dist/native/
+          ls -lh dist/native
+
+      - name: flutter build ios --release --no-codesign
+        working-directory: app
+        run: flutter build ios --release --no-codesign
+
+      - name: zip 패키징 (unsigned)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent app/build/ios/iphoneos/Runner.app dist/muud-edits-ios-unsigned.zip
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muud-edits-ios-unsigned
+          path: dist/muud-edits-ios-unsigned.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muud-core-ios-staticlib
+          path: dist/native/libmuud_core.a
+          if-no-files-found: error
+          retention-days: 14
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 7) 릴리즈: v* 태그에서만 실행. 모든 빌드가 성공해야 한다.
+  # ───────────────────────────────────────────────────────────────────────────
+  release:
+    name: GitHub Release (v* 태그)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [rust-core, flutter-analyze, build-android, build-windows, build-macos, build-ios]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 체크섬 생성
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -lh
+          sha256sum muud-edits-android.apk muud-edits-windows-x64.zip muud-edits-macos-*.zip muud-edits-ios-unsigned.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Release 업로드
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/muud-edits-android.apk
+            dist/muud-edits-windows-x64.zip
+            dist/muud-edits-macos-*.zip
+            dist/muud-edits-ios-unsigned.zip
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: false
