@@ -39,6 +39,10 @@ class EditorController extends ChangeNotifier {
   String? _exportJobJson;
   ExportProgressView? _exportProgress;
   String? _exportOutputPath;
+  String? _exportDisplayPath;
+  String? _exportUri;
+  String? _exportLocation;
+  bool _exportPublished = false;
   bool _mediaEngineMissing = false;
   String? _lastProbeSummary;
 
@@ -69,6 +73,16 @@ class EditorController extends ChangeNotifier {
   ExportProgressView? get exportProgress => _exportProgress;
 
   String? get exportOutputPath => _exportOutputPath;
+
+  /// 사용자가 실제로 찾을 수 있는 위치(Android: Downloads/muud-edits/…).
+  String? get exportDisplayPath => _exportDisplayPath;
+
+  /// 공개된 결과의 content:// URI(Android). 공유/열기에 쓴다.
+  String? get exportUri => _exportUri;
+
+  String? get exportLocation => _exportLocation;
+
+  bool get exportPublished => _exportPublished;
 
   bool get mediaEngineMissing => _mediaEngineMissing;
 
@@ -462,6 +476,64 @@ class EditorController extends ChangeNotifier {
     return 'video';
   }
 
+  /// 자막 수정(텍스트/구간).
+  Future<void> updateSubtitle({
+    required String id,
+    String? text,
+    int? startMs,
+    int? endMs,
+  }) {
+    if (state == null) {
+      return Future<void>.value();
+    }
+    return apply(
+      Commands.updateSubtitle(
+        id: id,
+        text: text,
+        startMs: startMs,
+        endMs: endMs,
+      ),
+    );
+  }
+
+  /// 자막 삭제.
+  Future<void> removeSubtitle(String id) {
+    if (state == null) {
+      return Future<void>.value();
+    }
+    return apply(Commands.removeSubtitle(id: id));
+  }
+
+  /// 텍스트 클립의 문구 바꾸기.
+  Future<void> setTextClipContent(ClipView clip, String content) async {
+    final TrackView? track = _trackOf(clip.id);
+    if (track == null) {
+      return;
+    }
+    await apply(
+      Commands.setClipText(
+        trackId: track.id,
+        clipId: clip.id,
+        content: content,
+      ),
+    );
+  }
+
+  TrackView? _trackOf(String clipId) {
+    final EditorState? current = state;
+    if (current == null) {
+      return null;
+    }
+    for (final TrackView track in current.tracks) {
+      for (final ClipView clip in track.clips) {
+        if (clip.id == clipId) {
+          return track;
+        }
+      }
+    }
+    return null;
+  }
+
   /// 텍스트 오버레이 추가(재생 헤드 위치).
   Future<void> addTextOverlay(String content, {int durationMs = 2500}) async {
     final TrackView? track = firstOverlayTrack;
@@ -653,6 +725,7 @@ class EditorController extends ChangeNotifier {
         _exportProgress = next;
         if (next.state == 'completed') {
           _notice = '내보내기 완료 · ${_exportOutputPath ?? ''}';
+          unawaited(publishExport());
         } else if (next.state == 'failed') {
           _error = next.error ?? '내보내기에 실패했습니다';
         } else if (next.state == 'canceled') {
@@ -676,6 +749,129 @@ class EditorController extends ChangeNotifier {
         .replaceAll('-', '');
     final String extension = _lastPlan?.container ?? 'mp4';
     return '${directory.path}/muud-edits-export-$stamp.$extension';
+  }
+
+  /// 내보내기 결과를 사용자가 찾을 수 있는 곳으로 공개한다.
+  ///
+  /// Android는 MediaStore(갤러리·다운로드)로 복사하고, 실패해도 원래 경로를 남긴다.
+  Future<void> publishExport() async {
+    final String? path = _exportOutputPath;
+    if (path == null) {
+      return;
+    }
+    final String name = path.split(RegExp(r'[/\\]')).last;
+    final Map<String, dynamic> info = await _media.publishFile(
+      path: path,
+      displayName: name,
+      isVideo: (path.toLowerCase().endsWith('.mp4') ||
+          path.toLowerCase().endsWith('.mov')),
+    );
+    final String? error = info['error']?.toString();
+    _exportDisplayPath = info['display_path']?.toString() ?? path;
+    _exportUri = info['uri']?.toString();
+    _exportLocation = info['location']?.toString();
+    _exportPublished = error == null;
+    _notice = error == null
+        ? '내보내기 완료 · ${_exportDisplayPath ?? path}'
+        : '내보내기 완료 · $path (공개 폴더로 복사하지 못했습니다: $error)';
+    notifyListeners();
+  }
+
+  /// 내보낸 영상/프로젝트 파일을 공유한다.
+  Future<void> shareExport() async {
+    final String? target = _exportUri ?? _exportDisplayPath ?? _exportOutputPath;
+    if (target == null) {
+      return;
+    }
+    final bool opened = await _media.shareFile(target);
+    if (!opened) {
+      _notice = '이 플랫폼에서는 공유 시트를 열 수 없습니다 · ${_exportDisplayPath ?? target}';
+      notifyListeners();
+    }
+  }
+
+  /// 내보낸 파일을 기본 앱으로 연다.
+  Future<void> openExport() async {
+    final String? target = _exportUri ?? _exportDisplayPath ?? _exportOutputPath;
+    if (target == null) {
+      return;
+    }
+    final bool opened = await _media.openFile(target);
+    if (!opened) {
+      _notice = '이 플랫폼에서는 기본 앱으로 열 수 없습니다 · ${_exportDisplayPath ?? target}';
+      notifyListeners();
+    }
+  }
+
+  /// 저장한 프로젝트 파일을 다운로드 폴더에도 남긴다(찾기 쉽게).
+  Future<void> publishProject(String path) async {
+    final String name = path.split(RegExp(r'[/\\]')).last;
+    final Map<String, dynamic> info = await _media.publishFile(
+      path: path,
+      displayName: name,
+      isVideo: false,
+    );
+    final String? display = info['display_path']?.toString();
+    _lastSavedProjectPath = path;
+    _lastSavedProjectDisplay = display ?? path;
+    _lastSavedProjectUri = info['uri']?.toString();
+    _notice = '저장했습니다 · ${_lastSavedProjectDisplay ?? path}';
+    notifyListeners();
+  }
+
+  String? _lastSavedProjectPath;
+  String? _lastSavedProjectDisplay;
+  String? _lastSavedProjectUri;
+
+  String? get lastSavedProjectPath => _lastSavedProjectPath;
+
+  String? get lastSavedProjectDisplay => _lastSavedProjectDisplay;
+
+  /// 저장한 프로젝트 파일을 공유한다.
+  Future<void> saveShare(String path) async {
+    final bool ok = await _media.shareFile(
+      _lastSavedProjectUri ?? _lastSavedProjectDisplay ?? path,
+    );
+    if (!ok) {
+      _notice = '이 플랫폼에서는 공유 시트를 열 수 없습니다 · ${_lastSavedProjectDisplay ?? path}';
+      notifyListeners();
+    }
+  }
+
+  /// 저장된 프로젝트(.muudproj)를 연다.
+  Future<bool> loadProject(String path) async {
+    _busy = true;
+    _error = null;
+    notifyListeners();
+    final bool ok = await _loadProjectInternal(path);
+    _busy = false;
+    notifyListeners();
+    return ok;
+  }
+
+  Future<bool> _loadProjectInternal(String path) async {
+    try {
+      final String raw = await _bridge.loadProject(path);
+      final EditorState next = EditorState.fromEnvelope(raw);
+      _state = next;
+      _playheadMs = 0;
+      _selectedClipId = null;
+      _lastPlan = null;
+      _lastRenderPlan = null;
+      _exportProgress = null;
+      _exportOutputPath = null;
+      _exportDisplayPath = null;
+      _exportUri = null;
+      _exportPublished = false;
+      _notice = '프로젝트를 열었습니다 · ${next.summary.name}';
+      return true;
+    } on BridgeException catch (error) {
+      _error = error.message;
+      return false;
+    } catch (error) {
+      _error = '프로젝트를 열지 못했습니다: $error';
+      return false;
+    }
   }
 
   Map<String, dynamic> _mapOf(Object? value) {
@@ -703,11 +899,15 @@ class EditorController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> saveProject(String path) {
-    return _mutate(
+  /// 프로젝트를 저장한다(코어가 상태와 히스토리를 함께 쓴다).
+  Future<void> saveProject(String path) async {
+    await _mutate(
       () => _bridge.saveProject(stateJson: stateJson, path: path),
       successNotice: '저장했습니다',
     );
+    if (_error == null) {
+      await publishProject(path);
+    }
   }
 
   Future<void> saveSubtitles(String path) {

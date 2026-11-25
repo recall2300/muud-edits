@@ -8,6 +8,7 @@ import '../bridge_api.dart';
 import '../models.dart';
 import '../theme.dart';
 import 'inspector_panel.dart';
+import 'preview_engine.dart';
 import 'preview_panel.dart';
 import 'timeline_view.dart';
 
@@ -15,10 +16,13 @@ import 'timeline_view.dart';
 ///
 /// 레이아웃: [프리뷰] → [트랜스포트] → [타임라인] → (선택 시) [인스펙터]
 class EditorScreen extends StatefulWidget {
-  const EditorScreen({super.key, this.controller});
+  const EditorScreen({super.key, this.controller, this.previewEngine});
 
   /// 테스트에서 가짜 브리지를 끼울 때 쓴다. 없으면 실제 Rust 코어를 쓴다.
   final EditorController? controller;
+
+  /// 테스트에서 가짜 플레이어를 끼울 때 쓴다. 없으면 실제 플러그인을 쓴다.
+  final PreviewEngine? previewEngine;
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
@@ -27,10 +31,13 @@ class EditorScreen extends StatefulWidget {
 class _EditorScreenState extends State<EditorScreen> {
   late final EditorController _controller =
       widget.controller ?? EditorController();
-  Timer? _playTimer;
-  bool _playing = false;
+  late final PreviewEngine _engine =
+      widget.previewEngine ??
+      PreviewEngine(controller: _controller);
 
   bool get _ownsController => widget.controller == null;
+
+  bool get _playing => _engine.isPlaying;
 
   @override
   void initState() {
@@ -43,7 +50,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
   @override
   void dispose() {
-    _playTimer?.cancel();
+    _engine.dispose();
     if (_ownsController) {
       _controller.dispose();
     }
@@ -53,33 +60,10 @@ class _EditorScreenState extends State<EditorScreen> {
   // ---------------------------------------------------------------- playback
 
   void _togglePlay() {
-    if (_playing) {
-      _stopPlayback();
-      return;
-    }
     if (_controller.durationMs <= 0) {
       return;
     }
-    setState(() => _playing = true);
-    _playTimer = Timer.periodic(const Duration(milliseconds: 33), (
-      Timer timer,
-    ) {
-      final int next = _controller.playheadMs + 33;
-      if (next >= _controller.durationMs) {
-        _controller.setPlayhead(_controller.durationMs);
-        _stopPlayback();
-        return;
-      }
-      _controller.setPlayhead(next);
-    });
-  }
-
-  void _stopPlayback() {
-    _playTimer?.cancel();
-    _playTimer = null;
-    if (mounted) {
-      setState(() => _playing = false);
-    }
+    _engine.togglePlay();
   }
 
   // ------------------------------------------------------------------ actions
@@ -93,6 +77,24 @@ class _EditorScreenState extends State<EditorScreen> {
           .replaceAll('.', '');
       final String path = '${directory.path}/muud-edits-$stamp.muudproj';
       await _controller.saveProject(path);
+      if (!mounted) {
+        return;
+      }
+      final String where =
+          _controller.lastSavedProjectDisplay ?? path;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('프로젝트를 저장했습니다\n$where'),
+          action: _controller.error == null
+              ? SnackBarAction(
+                  label: '공유',
+                  onPressed: () => unawaited(
+                    _controller.saveShare(path),
+                  ),
+                )
+              : null,
+        ),
+      );
     } catch (error) {
       if (!mounted) {
         return;
@@ -101,6 +103,46 @@ class _EditorScreenState extends State<EditorScreen> {
         context,
       ).showSnackBar(SnackBar(content: Text('저장하지 못했습니다: $error')));
     }
+  }
+
+  /// 저장한 프로젝트 파일(.muudproj)을 열어 편집을 이어 간다.
+  Future<void> _openProject() async {
+    PlatformFile? picked;
+    try {
+      picked = await FilePicker.pickFile(
+        dialogTitle: '프로젝트 열기',
+        type: FileType.custom,
+        allowedExtensions: const <String>['muudproj', 'json'],
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('파일 선택기를 열지 못했습니다: $error')),
+      );
+      return;
+    }
+    if (picked == null) {
+      return;
+    }
+    final String? path = picked.path;
+    if (path == null || path.isEmpty) {
+      return;
+    }
+    final bool loaded = await _controller.loadProject(path);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          loaded
+              ? '프로젝트를 열었습니다'
+              : '프로젝트를 열지 못했습니다: ${_controller.error ?? ''}',
+        ),
+      ),
+    );
   }
 
   /// 새 프로젝트. 저장하지 않은 편집이 있으면 먼저 확인한다.
@@ -311,6 +353,16 @@ class _EditorScreenState extends State<EditorScreen> {
     return result;
   }
 
+  /// 자막을 목록에서 골라 문구/구간을 고치거나 지운다.
+  Future<void> _openSubtitlesSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: EditorPalette.surface,
+      isScrollControlled: true,
+      builder: (BuildContext context) => _SubtitlesSheet(controller: _controller),
+    );
+  }
+
   void _openExportSheet() {
     unawaited(_controller.prepareExport());
     showModalBottomSheet<void>(
@@ -328,7 +380,7 @@ class _EditorScreenState extends State<EditorScreen> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: _controller,
+      listenable: Listenable.merge(<Listenable>[_controller, _engine]),
       builder: (BuildContext context, Widget? child) {
         final EditorState? state = _controller.state;
         final ProjectSummary? summary = state?.summary;
@@ -406,6 +458,11 @@ class _EditorScreenState extends State<EditorScreen> {
                 icon: const Icon(Icons.redo),
               ),
               IconButton(
+                tooltip: '프로젝트 열기',
+                onPressed: _controller.ready ? _openProject : null,
+                icon: const Icon(Icons.folder_open_outlined),
+              ),
+              IconButton(
                 tooltip: '저장',
                 onPressed: _controller.ready ? _saveProject : null,
                 icon: const Icon(Icons.save_outlined),
@@ -449,7 +506,7 @@ class _EditorScreenState extends State<EditorScreen> {
                         onAddSubtitle: _controller.ready ? _addSubtitle : null,
                         onExport: _controller.ready ? _openExportSheet : null,
                       )
-                    : PreviewPanel(controller: _controller),
+                    : PreviewPanel(controller: _controller, engine: _engine),
               ),
               _buildTransport(summary),
               SizedBox(
@@ -486,7 +543,10 @@ class _EditorScreenState extends State<EditorScreen> {
         children: <Widget>[
           IconButton(
             tooltip: '한 프레임 뒤로',
-            onPressed: () => _controller.stepFrames(-1),
+            onPressed: () {
+              _engine.pause();
+              _controller.stepFrames(-1);
+            },
             icon: const Icon(Icons.skip_previous, size: 20),
           ),
           IconButton(
@@ -500,7 +560,10 @@ class _EditorScreenState extends State<EditorScreen> {
           ),
           IconButton(
             tooltip: '한 프레임 앞으로',
-            onPressed: () => _controller.stepFrames(1),
+            onPressed: () {
+              _engine.pause();
+              _controller.stepFrames(1);
+            },
             icon: const Icon(Icons.skip_next, size: 20),
           ),
           const SizedBox(width: 4),
@@ -528,9 +591,14 @@ class _EditorScreenState extends State<EditorScreen> {
             icon: const Icon(Icons.title, size: 20),
           ),
           IconButton(
+            tooltip: '자막 목록 · 편집',
+            onPressed: _controller.ready ? _openSubtitlesSheet : null,
+            icon: const Icon(Icons.subtitles_outlined, size: 20),
+          ),
+          IconButton(
             tooltip: '자막 추가',
             onPressed: _controller.ready ? _addSubtitle : null,
-            icon: const Icon(Icons.subtitles_outlined, size: 20),
+            icon: const Icon(Icons.playlist_add, size: 20),
           ),
         ],
       ),
@@ -623,12 +691,13 @@ class _ExportSheet extends StatelessWidget {
       builder: (BuildContext context, Widget? child) {
         final ExportPlan? plan = controller.lastPlan;
         return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
                 const Text(
                   '내보내기 계획',
                   style: TextStyle(
@@ -645,6 +714,8 @@ class _ExportSheet extends StatelessWidget {
                     fontSize: 11,
                   ),
                 ),
+                const SizedBox(height: 8),
+                _ExportLimitNote(state: controller.state),
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
@@ -771,6 +842,7 @@ class _ExportSheet extends StatelessWidget {
               ],
             ),
           ),
+          ),
         );
       },
     );
@@ -845,10 +917,47 @@ class _ExportSheet extends StatelessWidget {
               ),
             ),
           ),
-        if (progress.state == 'completed' &&
+        if (progress.state == 'completed') ...<Widget>[
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: EditorPalette.audioTrack.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              controller.exportPublished
+                  ? '저장 위치: ${controller.exportDisplayPath ?? controller.exportOutputPath ?? ''}'
+                  : '파일: ${controller.exportOutputPath ?? ''}',
+              style: const TextStyle(
+                color: EditorPalette.text,
+                fontSize: 10,
+                height: 1.35,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: <Widget>[
+              OutlinedButton.icon(
+                onPressed: () => unawaited(controller.shareExport()),
+                icon: const Icon(Icons.share_outlined, size: 15),
+                label: const Text('공유'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: () => unawaited(controller.openExport()),
+                icon: const Icon(Icons.play_circle_outline, size: 15),
+                label: const Text('열기'),
+              ),
+            ],
+          ),
+        ],
+        if (progress.state == 'failed' &&
             controller.exportOutputPath != null)
           Padding(
-            padding: const EdgeInsets.only(top: 6),
+            padding: const EdgeInsets.only(top: 4),
             child: SelectableText(
               controller.exportOutputPath!,
               style: const TextStyle(
@@ -858,6 +967,55 @@ class _ExportSheet extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// 이번 버전 내보내기의 한계를 숨기지 않고 보여 준다.
+class _ExportLimitNote extends StatelessWidget {
+  const _ExportLimitNote({required this.state});
+
+  final EditorState? state;
+
+  @override
+  Widget build(BuildContext context) {
+    final EditorState? current = state;
+    final Iterable<ClipView> clips = current == null
+        ? const <ClipView>[]
+        : current.tracks.expand((TrackView track) => track.clips);
+    final bool hasOverlays =
+        current != null && (current.subtitles.isNotEmpty || clips.any((ClipView clip) => clip.kind == 'text'));
+    final bool hasImages = clips.any((ClipView clip) => clip.kind == 'image');
+    final List<String> notes = <String>[
+      if (hasOverlays) '자막·텍스트는 미리보기에만 보이고 영상에는 새기지 않습니다(이번 버전).',
+      if (hasImages) '사진 클립은 내보내기에서 제외됩니다(이번 버전).',
+      '영상·오디오 자르기/병합은 원본 화질 그대로 내보냅니다.',
+    ];
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: EditorPalette.background,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: EditorPalette.outline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          for (final String note in notes)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 2),
+              child: Text(
+                '· $note',
+                style: const TextStyle(
+                  color: EditorPalette.textMuted,
+                  fontSize: 9.5,
+                  height: 1.35,
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -1023,5 +1181,274 @@ class _StepHints extends StatelessWidget {
           ),
       ],
     );
+  }
+}
+
+/// 자막 목록/편집 시트.
+///
+/// 자막은 영상 위에 시간 범위로 얹히므로, 목록에서 문구와 구간을 직접 고칠 수
+/// 있어야 한다(추가만 되고 고칠 수 없으면 실사용에서 막힌다).
+class _SubtitlesSheet extends StatelessWidget {
+  const _SubtitlesSheet({required this.controller});
+
+  final EditorController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (BuildContext context, Widget? child) {
+        final EditorState? state = controller.state;
+        final List<SubtitleView> subtitles =
+            state?.subtitles ?? const <SubtitleView>[];
+        final double maxHeight = MediaQuery.of(context).size.height * 0.7;
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Row(
+                    children: <Widget>[
+                      Text(
+                        '자막 ${subtitles.length}개',
+                        style: const TextStyle(
+                          color: EditorPalette.text,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      FilledButton.icon(
+                        onPressed: () async {
+                          final String? text = await showDialog<String>(
+                            context: context,
+                            builder: (BuildContext context) =>
+                                const _SubtitleEditorDialog(),
+                          );
+                          if (text != null && text.trim().isNotEmpty) {
+                            await controller.addSubtitleHere(text.trim());
+                          }
+                        },
+                        icon: const Icon(Icons.add, size: 16),
+                        label: const Text('재생 헤드에 추가'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    '자막은 재생 헤드 시각부터 2초로 추가됩니다. 문구/구간은 목록에서 고칠 수 있습니다.',
+                    style: TextStyle(
+                      color: EditorPalette.textMuted,
+                      fontSize: 10,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  if (subtitles.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 18),
+                      child: Text(
+                        '아직 자막이 없습니다. 재생 헤드를 원하는 위치로 옮긴 뒤 추가해 보세요.',
+                        style: TextStyle(
+                          color: EditorPalette.textMuted,
+                          fontSize: 11,
+                        ),
+                      ),
+                    )
+                  else
+                    Flexible(
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: subtitles.length,
+                        separatorBuilder: (BuildContext context, int index) =>
+                            const Divider(
+                              height: 1,
+                              color: EditorPalette.outline,
+                            ),
+                        itemBuilder: (BuildContext context, int index) {
+                          final SubtitleView item = subtitles[index];
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: Text(
+                              item.text,
+                              style: const TextStyle(
+                                color: EditorPalette.text,
+                                fontSize: 12,
+                              ),
+                            ),
+                            subtitle: Text(
+                              '${formatTimecode(item.startMs)} → ${formatTimecode(item.endMs)}',
+                              style: const TextStyle(
+                                color: EditorPalette.textMuted,
+                                fontSize: 10,
+                              ),
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: <Widget>[
+                                IconButton(
+                                  tooltip: '수정',
+                                  iconSize: 16,
+                                  onPressed: () async {
+                                    final ({String text, int startMs, int endMs})?
+                                    edited = await showDialog<
+                                      ({String text, int startMs, int endMs})
+                                    >(
+                                      context: context,
+                                      builder: (BuildContext context) =>
+                                          _SubtitleEditorDialog(item: item),
+                                    );
+                                    if (edited == null ||
+                                        edited.text.trim().isEmpty) {
+                                      return;
+                                    }
+                                    await controller.updateSubtitle(
+                                      id: item.id,
+                                      text: edited.text.trim(),
+                                      startMs: edited.startMs,
+                                      endMs: edited.endMs,
+                                    );
+                                  },
+                                  icon: const Icon(Icons.edit_outlined),
+                                ),
+                                IconButton(
+                                  tooltip: '삭제',
+                                  iconSize: 16,
+                                  onPressed: () =>
+                                      controller.removeSubtitle(item.id),
+                                  icon: const Icon(Icons.delete_outline),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// 자막 문구/구간 편집 대화상자.
+///
+/// [TextEditingController]를 대화상자 자신이 들고 있으므로, 닫히는 애니메이션
+/// 도중에 컨트롤러가 dispose 되어 생기는 오류가 없다.
+class _SubtitleEditorDialog extends StatefulWidget {
+  const _SubtitleEditorDialog({this.item});
+
+  /// null이면 새 자막(문구만 받는다).
+  final SubtitleView? item;
+
+  @override
+  State<_SubtitleEditorDialog> createState() => _SubtitleEditorDialogState();
+}
+
+class _SubtitleEditorDialogState extends State<_SubtitleEditorDialog> {
+  late final TextEditingController _text = TextEditingController(
+    text: widget.item?.text ?? '',
+  );
+  late final TextEditingController _start = TextEditingController(
+    text: ((widget.item?.startMs ?? 0) / 1000).toStringAsFixed(2),
+  );
+  late final TextEditingController _end = TextEditingController(
+    text: ((widget.item?.endMs ?? 2000) / 1000).toStringAsFixed(2),
+  );
+
+  @override
+  void dispose() {
+    _text.dispose();
+    _start.dispose();
+    _end.dispose();
+    super.dispose();
+  }
+
+  int? _secondsToMs(String raw) {
+    final double? seconds = double.tryParse(raw.trim().replaceAll(',', '.'));
+    if (seconds == null || seconds.isNaN) {
+      return null;
+    }
+    return (seconds * 1000).round();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool editing = widget.item != null;
+    return AlertDialog(
+      backgroundColor: EditorPalette.surface,
+      title: Text(editing ? '자막 수정' : '자막 추가'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            TextField(
+              controller: _text,
+              autofocus: true,
+              decoration: InputDecoration(
+                hintText: editing ? null : '화면 아래에 표시할 문구',
+                labelText: '문구',
+              ),
+              onSubmitted: (_) => _submit(context),
+            ),
+            if (editing) ...<Widget>[
+              const SizedBox(height: 8),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: TextField(
+                      controller: _start,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: '시작(초)'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _end,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: '끝(초)'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(
+          onPressed: () => _submit(context),
+          child: Text(editing ? '저장' : '추가'),
+        ),
+      ],
+    );
+  }
+
+  void _submit(BuildContext context) {
+    final SubtitleView? item = widget.item;
+    if (item == null) {
+      Navigator.of(context).pop(_text.text);
+      return;
+    }
+    final int start = _secondsToMs(_start.text) ?? item.startMs;
+    final int end = _secondsToMs(_end.text) ?? item.endMs;
+    Navigator.of(context).pop((
+      text: _text.text,
+      startMs: start,
+      endMs: end <= start ? start + 2000 : end,
+    ));
   }
 }

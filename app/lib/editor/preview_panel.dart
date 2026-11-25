@@ -1,17 +1,23 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../bridge_api.dart';
 import '../models.dart';
 import '../theme.dart';
+import 'preview_engine.dart';
 
 /// 프리뷰 패널.
 ///
-/// 1단계에서는 **레이어 정보만으로** 텍스트/자막을 미리 보여 준다.
-/// 실제 프레임은 플랫폼 텍스처(2단계)가 이 자리에 그려진다.
+/// 실제 재생은 [PreviewEngine]이 맡는다(영상 프레임 + 소리). 이 위젯은
+/// 재생 표면 위에 **텍스트 오버레이·자막·배지**를 재생 헤드 시각에 맞춰 그린다.
 class PreviewPanel extends StatelessWidget {
-  const PreviewPanel({super.key, required this.controller});
+  const PreviewPanel({super.key, required this.controller, this.engine});
 
   final EditorController controller;
+
+  /// 재생 엔진. 없으면 화면(EditorScreen)이 만든 것을 쓴다.
+  final PreviewEngine? engine;
 
   @override
   Widget build(BuildContext context) {
@@ -24,6 +30,7 @@ class PreviewPanel extends StatelessWidget {
         ),
       );
     }
+    final PreviewEngine? player = engine;
 
     final int playhead = controller.playheadMs;
     final List<ClipView> textClips = state.textClipsAt(playhead);
@@ -45,7 +52,10 @@ class PreviewPanel extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: <Widget>[
-                  const _TextureSlot(),
+                  if (player == null)
+                    const _NoPlayerSlot()
+                  else
+                    _PreviewSurface(engine: player, state: state),
                   for (int index = 0; index < textClips.length; index++)
                     Align(
                       alignment: Alignment(0, 0.55 - index * 0.14),
@@ -102,6 +112,17 @@ class PreviewPanel extends StatelessWidget {
                       text: '${state.width}x${state.height} · ${state.fps}fps',
                     ),
                   ),
+                  if (player != null && player.error != null)
+                    Positioned(
+                      left: 10,
+                      right: 10,
+                      bottom: 8,
+                      child: _Notice(
+                        icon: Icons.error_outline,
+                        color: EditorPalette.playhead,
+                        text: player.error!,
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -112,9 +133,88 @@ class PreviewPanel extends StatelessWidget {
   }
 }
 
-/// 컴포지터 출력이 들어갈 자리(플랫폼 텍스처).
-class _TextureSlot extends StatelessWidget {
-  const _TextureSlot();
+/// 재생 표면(영상/이미지)과 그 위의 상태 표시.
+class _PreviewSurface extends StatelessWidget {
+  const _PreviewSurface({required this.engine, required this.state});
+
+  final PreviewEngine engine;
+  final EditorState state;
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: engine.repaint,
+      builder: (BuildContext context, int _, Widget? child) {
+        final PreviewSelection selection = engine.selection;
+        final Widget? surface = engine.surface;
+        final String? imagePath = engine.imagePath;
+
+        Widget content;
+        if (surface != null) {
+          final double ratio = engine.surfaceAspectRatio > 0
+              ? engine.surfaceAspectRatio
+              : state.aspectRatio;
+          content = FittedBox(
+            fit: BoxFit.contain,
+            child: SizedBox(
+              width: 1000,
+              height: 1000 / ratio,
+              child: surface,
+            ),
+          );
+        } else if (imagePath != null) {
+          content = Image.file(
+            File(imagePath),
+            fit: BoxFit.contain,
+            gaplessPlayback: true,
+            errorBuilder: (BuildContext context, Object error, _) =>
+                const _GapSlot(
+                  icon: Icons.broken_image_outlined,
+                  title: '이미지를 표시할 수 없습니다',
+                ),
+          );
+        } else if (engine.isLoading) {
+          content = const _GapSlot(
+            icon: Icons.hourglass_bottom,
+            title: '프레임을 준비하는 중…',
+          );
+        } else {
+          content = const _GapSlot(
+            icon: Icons.movie_outlined,
+            title: '이 구간에는 영상이 없습니다',
+          );
+        }
+
+        // 영상 클립 불투명도 반영(텍스트/자막은 위에서 별도로 그린다).
+        final double opacity = selection.visualClip?.opacity ?? 1;
+        return Opacity(
+          opacity: opacity.clamp(0.0, 1.0),
+          child: content,
+        );
+      },
+    );
+  }
+}
+
+/// 재생 엔진이 없을 때(설정 오류)의 안내.
+class _NoPlayerSlot extends StatelessWidget {
+  const _NoPlayerSlot();
+
+  @override
+  Widget build(BuildContext context) {
+    return const _GapSlot(
+      icon: Icons.movie_creation_outlined,
+      title: '프리뷰를 준비하는 중…',
+    );
+  }
+}
+
+/// 영상이 없는 자리.
+class _GapSlot extends StatelessWidget {
+  const _GapSlot({required this.icon, required this.title});
+
+  final IconData icon;
+  final String title;
 
   @override
   Widget build(BuildContext context) {
@@ -131,29 +231,60 @@ class _TextureSlot extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             Icon(
-              Icons.movie_creation_outlined,
-              size: 34,
+              icon,
+              size: 30,
               color: EditorPalette.textMuted.withValues(alpha: 0.5),
             ),
             const SizedBox(height: 8),
             Text(
-              '프리뷰 렌더러 미연결',
+              title,
+              textAlign: TextAlign.center,
               style: TextStyle(
                 color: EditorPalette.textMuted.withValues(alpha: 0.8),
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
               ),
             ),
-            const SizedBox(height: 2),
-            Text(
-              '플랫폼 텍스처를 붙이면 여기에 프레임이 표시됩니다',
-              style: TextStyle(
-                color: EditorPalette.textMuted.withValues(alpha: 0.45),
-                fontSize: 9,
-              ),
-            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _Notice extends StatelessWidget {
+  const _Notice({
+    required this.icon,
+    required this.color,
+    required this.text,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.62),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 5),
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color, fontSize: 9.5, height: 1.3),
+            ),
+          ),
+        ],
       ),
     );
   }

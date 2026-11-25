@@ -169,6 +169,7 @@ class ExportEngine(private val context: Context) {
                     endMs = segment.optLong("source_out_ms", 0),
                     speed = segment.optDouble("speed", 1.0).toFloat(),
                     removeAudio = true,
+                    removeVideo = false,
                 )
             )
         }
@@ -194,6 +195,9 @@ class ExportEngine(private val context: Context) {
                     endMs = segment.optLong("source_out_ms", 0),
                     speed = segment.optDouble("speed", 1.0).toFloat(),
                     removeAudio = false,
+                    // 소리만 쓰는 시퀀스다. 영상을 남기면 컴포지션에 비디오
+                    // 시퀀스가 둘이 되어 Transformer가 거부한다.
+                    removeVideo = true,
                 )
             )
         }
@@ -206,6 +210,7 @@ class ExportEngine(private val context: Context) {
         endMs: Long,
         speed: Float,
         removeAudio: Boolean,
+        removeVideo: Boolean,
     ): EditedMediaItem {
         val mediaItem = MediaItem.Builder()
             .setUri(File(path).toURI().toString())
@@ -221,15 +226,26 @@ class ExportEngine(private val context: Context) {
         if (removeAudio) {
             builder.setRemoveAudio(true)
         }
-        // 참고: 배속은 Media3 1.4+의 `SpeedChangeEffect`로 적용한다.
-        // 속도별 오디오 피치 보정은 Transformer가 처리한다.
+        if (removeVideo) {
+            builder.setRemoveVideo(true)
+        }
+        // 배속: 영상은 SpeedChangeEffect, 소리는 SonicAudioProcessor로 같은 배속을
+        // 적용해야 음성 피치와 길이가 함께 맞는다(둘 중 하나만 적용하면 싱크가 어긋난다).
         if (speed > 0f && kotlin.math.abs(speed - 1f) > 0.01f) {
-            val audioProcessors =
+            val audioProcessors = if (removeAudio) {
                 emptyList<androidx.media3.common.audio.AudioProcessor>()
-            val videoEffects =
+            } else {
+                listOf<androidx.media3.common.audio.AudioProcessor>(
+                    androidx.media3.common.audio.SonicAudioProcessor().apply { setSpeed(speed) }
+                )
+            }
+            val videoEffects = if (removeVideo) {
+                emptyList<androidx.media3.common.Effect>()
+            } else {
                 listOf<androidx.media3.common.Effect>(
                     androidx.media3.effect.SpeedChangeEffect(speed)
                 )
+            }
             builder.setEffects(androidx.media3.transformer.Effects(audioProcessors, videoEffects))
         }
         return builder.build()
@@ -280,12 +296,18 @@ class ExportEngine(private val context: Context) {
                 if (canceled) {
                     emit(mapOf("event" to "canceled", "state" to "canceled"))
                 } else {
+                    val detail = buildString {
+                        append(exportException.message ?: "내보내기에 실패했습니다")
+                        append(" (")
+                        append(ExportException.getErrorCodeName(exportException.errorCode))
+                        append(")")
+                    }
                     emit(
                         mapOf(
                             "event" to "failed",
                             "state" to "failed",
-                            "message" to exportException.message,
-                            "error" to exportException.message,
+                            "message" to detail,
+                            "error" to detail,
                         )
                     )
                 }

@@ -108,6 +108,27 @@ class FakeCoreBridge implements CoreBridge {
         _push('클립 삭제');
         _removeClip('${command['track_id']}', '${command['clip_id']}');
         return _envelope();
+      case 'set_clip_text':
+        _push('텍스트 수정');
+        _setClipText(
+          '${command['track_id']}',
+          '${command['clip_id']}',
+          (command['text'] as Map?)?['content']?.toString() ?? '',
+        );
+        return _envelope();
+      case 'update_subtitle':
+        _push('자막 수정');
+        _updateSubtitle(
+          '${command['id']}',
+          (command['patch'] as Map?) ?? const <String, dynamic>{},
+        );
+        return _envelope();
+      case 'remove_subtitle':
+        _push('자막 삭제');
+        _subtitles.removeWhere(
+          (Map<String, dynamic> item) => item['id'] == '${command['id']}',
+        );
+        return _envelope();
       case 'add_clip':
         _push('클립 추가');
         final Map<String, dynamic> clip = (command['clip'] as Map)
@@ -458,6 +479,35 @@ class FakeCoreBridge implements CoreBridge {
       }
     }
     clips.add(clip);
+  }
+
+  void _setClipText(String trackId, String clipId, String content) {
+    final Map<String, dynamic> track = _trackById(trackId);
+    for (final dynamic raw in (track['clips'] as List)) {
+      final Map<String, dynamic> clip = (raw as Map).cast<String, dynamic>();
+      if (clip['id'] == clipId) {
+        clip['text'] = <String, dynamic>{'content': content};
+        return;
+      }
+    }
+  }
+
+  void _updateSubtitle(String id, Map<dynamic, dynamic> patch) {
+    for (final Map<String, dynamic> item in _subtitles) {
+      if (item['id'] != id) {
+        continue;
+      }
+      if (patch['text'] != null) {
+        item['text'] = '${patch['text']}';
+      }
+      if (patch['start_ms'] != null) {
+        item['start_ms'] = (patch['start_ms'] as num).toInt();
+      }
+      if (patch['end_ms'] != null) {
+        item['end_ms'] = (patch['end_ms'] as num).toInt();
+      }
+      return;
+    }
   }
 
   void _removeClip(String trackId, String clipId) {

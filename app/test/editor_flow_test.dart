@@ -144,6 +144,77 @@ void main() {
     expect(media.lastOutputPath, contains('muud-edits-export-'));
   });
 
+  testWidgets('자막 목록에서 문구를 고치고 지울 수 있다', (WidgetTester tester) async {
+    final EditorController controller = await _pumpEditor(tester);
+    await controller.addSubtitleHere('처음 자막');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('자막 목록 · 편집'));
+    await tester.pumpAndSettle();
+    expect(find.text('자막 1개'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('수정'));
+    await tester.pumpAndSettle();
+    expect(find.text('자막 수정'), findsOneWidget);
+
+    await tester.enterText(find.widgetWithText(TextField, '처음 자막'), '고친 자막');
+    await tester.tap(find.text('저장'));
+    await tester.pumpAndSettle();
+
+    expect(controller.error, isNull);
+    expect(controller.state!.subtitles.first.text, '고친 자막');
+
+    await tester.tap(find.byTooltip('삭제'));
+    await tester.pumpAndSettle();
+    expect(controller.state!.subtitles, isEmpty);
+  });
+
+  testWidgets('저장 버튼은 프로젝트를 저장하고 위치를 안내한다', (WidgetTester tester) async {
+    final EditorController controller = await _pumpEditor(tester);
+    await controller.addMediaFile('/media/first.mp4');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('저장'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(controller.error, isNull);
+    expect(controller.lastSavedProjectPath, contains('muudproj'));
+    expect(find.textContaining('프로젝트를 저장했습니다'), findsOneWidget);
+  });
+
+  testWidgets('내보내기가 끝나면 공유·열기 버튼과 저장 위치를 보여 준다', (
+    WidgetTester tester,
+  ) async {
+    final FakeMediaPlatformBridge media = FakeMediaPlatformBridge();
+    final EditorController controller = await _pumpEditor(tester, media: media);
+    await controller.addMediaFile('/media/first.mp4');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('내보내기'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('내보내기 시작'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    media.emit(
+      const MediaExportEvent(
+        event: 'completed',
+        state: 'completed',
+        completedFrames: 120,
+        totalFrames: 120,
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(controller.exportProgress?.state, 'completed');
+    expect(find.text('공유'), findsOneWidget);
+    expect(find.text('열기'), findsOneWidget);
+    expect(find.textContaining('저장 위치'), findsOneWidget);
+  });
+
   testWidgets('코어가 없으면 안내와 다시 시도 버튼이 뜬다', (WidgetTester tester) async {
     // 실제 FrbCoreBridge + 미로딩 상태 그대로(라이브러리 없는 환경과 같은 조건).
     rustCore = const RustCoreLoadResult(error: '코어 라이브러리를 찾지 못했습니다');

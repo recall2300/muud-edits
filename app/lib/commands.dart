@@ -154,6 +154,20 @@ class Commands {
     };
   }
 
+  /// 텍스트 클립의 문구 교체(나머지 스타일은 코어 기본값 유지).
+  static Map<String, dynamic> setClipText({
+    required String trackId,
+    required String clipId,
+    required String content,
+  }) {
+    return <String, dynamic>{
+      'type': 'set_clip_text',
+      'track_id': trackId,
+      'clip_id': clipId,
+      'text': <String, dynamic>{'content': content},
+    };
+  }
+
   /// 자막 수정.
   static Map<String, dynamic> updateSubtitle({
     required String id,

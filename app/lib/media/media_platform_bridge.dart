@@ -52,6 +52,23 @@ abstract class MediaPlatformBridge {
   /// 플랫폼 미디어 엔진 정보(없으면 빈 맵).
   Future<Map<String, dynamic>> platformInfo();
 
+  /// 결과 파일을 사용자가 찾을 수 있는 곳으로 공개한다.
+  ///
+  /// Android: MediaStore(`Movies/muud-edits` 또는 `Download/muud-edits`)에 복사하고
+  /// 갤러리/다운로드에서 바로 보이게 한 뒤 `{path, uri, display_path, location}`을 돌려준다.
+  /// 다른 플랫폼: 원래 경로를 그대로 돌려준다(앱 문서 폴더).
+  Future<Map<String, dynamic>> publishFile({
+    required String path,
+    required String displayName,
+    required bool isVideo,
+  });
+
+  /// 공유 시트 열기. 지원하지 않는 플랫폼은 false.
+  Future<bool> shareFile(String pathOrUri);
+
+  /// 기본 앱으로 열기. 지원하지 않는 플랫폼은 false.
+  Future<bool> openFile(String pathOrUri);
+
   /// 내보내기 진행 이벤트.
   Stream<MediaExportEvent> get progressStream;
 }
@@ -227,6 +244,66 @@ class MethodChannelMediaBridge implements MediaPlatformBridge {
       return const <String, dynamic>{};
     }
   }
+
+  @override
+  Future<Map<String, dynamic>> publishFile({
+    required String path,
+    required String displayName,
+    required bool isVideo,
+  }) async {
+    try {
+      final Map<Object?, Object?>? result = await _methods
+          .invokeMapMethod<Object?, Object?>('publishFile', <String, dynamic>{
+            'path': path,
+            'displayName': displayName,
+            'isVideo': isVideo,
+          });
+      if (result == null) {
+        return <String, dynamic>{'path': path, 'display_path': path};
+      }
+      return result.map(
+        (Object? key, Object? value) => MapEntry(key.toString(), value),
+      );
+    } on PlatformException catch (error) {
+      return <String, dynamic>{
+        'path': path,
+        'display_path': path,
+        'error': error.message ?? error.code,
+      };
+    } on MissingPluginException {
+      return <String, dynamic>{'path': path, 'display_path': path};
+    }
+  }
+
+  @override
+  Future<bool> shareFile(String pathOrUri) async {
+    try {
+      final bool? result = await _methods.invokeMethod<bool>(
+        'shareFile',
+        <String, dynamic>{'path': pathOrUri},
+      );
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> openFile(String pathOrUri) async {
+    try {
+      final bool? result = await _methods.invokeMethod<bool>(
+        'openFile',
+        <String, dynamic>{'path': pathOrUri},
+      );
+      return result ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
 }
 
 /// 네이티브 미디어 엔진 오류.
@@ -316,4 +393,22 @@ class FakeMediaPlatformBridge implements MediaPlatformBridge {
     'api': 'fake',
     'supports_export': true,
   };
+
+  @override
+  Future<Map<String, dynamic>> publishFile({
+    required String path,
+    required String displayName,
+    required bool isVideo,
+  }) async => <String, dynamic>{
+    'path': path,
+    'display_path': '/Downloads/muud-edits/$displayName',
+    'uri': 'content://media/external/file/test',
+    'location': 'Downloads/muud-edits',
+  };
+
+  @override
+  Future<bool> shareFile(String pathOrUri) async => true;
+
+  @override
+  Future<bool> openFile(String pathOrUri) async => true;
 }
