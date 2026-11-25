@@ -7,8 +7,5 @@
 rust_input: crate::bridge
 rust_root: ../rust_core
 dart_output: lib/src/rust
-# Rust 코어를 빌드해 앱에 넣는 패키지 (carapace 대체, FRB 2.x 표준 방식)
-rust_builder_output: rust_builder
-
 # 편의: 생성되는 Dart 클래스 이름 규칙
 dart_enums_style: true

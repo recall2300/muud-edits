@@ -18,8 +18,8 @@ import 'models.dart';
 /// * 오류는 던지지 않고 [error]에 담는다 → 화면이 배너/스낵바로 보여준다.
 class EditorController extends ChangeNotifier {
   EditorController({CoreBridge? bridge, MediaPlatformBridge? media})
-      : _bridge = bridge ?? const FrbCoreBridge(),
-        _media = media ?? MethodChannelMediaBridge();
+    : _bridge = bridge ?? const FrbCoreBridge(),
+      _media = media ?? MethodChannelMediaBridge();
 
   final CoreBridge _bridge;
   final MediaPlatformBridge _media;
@@ -183,8 +183,49 @@ class EditorController extends ChangeNotifier {
       _error = error.message;
     } catch (error) {
       _bridgeReady = false;
-      _error = 'Rust 코어를 불러오지 못했습니다.\n'
+      _error =
+          'Rust 코어를 불러오지 못했습니다.\n'
           '`dart run flutter_rust_bridge_codegen generate` 후 다시 실행하세요.\n\n$error';
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// 새 프로젝트를 만든다(지금 편집 중인 내용은 버린다).
+  ///
+  /// 코어가 아직 준비되지 않았으면 [bootstrap]을 다시 시도한다.
+  Future<void> newProject({String? name}) async {
+    if (!_bridgeReady) {
+      await bootstrap();
+      return;
+    }
+    _busy = true;
+    _error = null;
+    notifyListeners();
+    try {
+      final String label = (name == null || name.trim().isEmpty)
+          ? '새 프로젝트'
+          : name.trim();
+      final String raw = await _bridge.createProject(
+        name: label,
+        width: 1080,
+        height: 1920,
+        fps: 30,
+      );
+      _state = EditorState.fromEnvelope(raw);
+      _playheadMs = 0;
+      _selectedClipId = null;
+      _lastPlan = null;
+      _lastRenderPlan = null;
+      _exportProgress = null;
+      _exportOutputPath = null;
+      _exportJobJson = null;
+      _notice = '새 프로젝트를 만들었습니다';
+    } on BridgeException catch (error) {
+      _error = error.message;
+    } catch (error) {
+      _error = '새 프로젝트를 만들지 못했습니다: $error';
     } finally {
       _busy = false;
       notifyListeners();
@@ -253,7 +294,9 @@ class EditorController extends ChangeNotifier {
         Commands.trimClip(
           trackId: hit.track.id,
           clipId: hit.clip.id,
-          endMs: nextEnd <= hit.clip.startMs ? hit.clip.startMs + frameMs : nextEnd,
+          endMs: nextEnd <= hit.clip.startMs
+              ? hit.clip.startMs + frameMs
+              : nextEnd,
         ),
       );
     }
@@ -523,17 +566,14 @@ class EditorController extends ChangeNotifier {
       _exportJobJson = jsonEncode(jobEnvelope['job']);
       _exportProgress = ExportProgressView.fromJob(_mapOf(jobEnvelope['job']));
 
-      await _media.startExport(
-        graphJson: jsonEncode(graph),
-        outputPath: path,
-      );
+      await _media.startExport(graphJson: jsonEncode(graph), outputPath: path);
       _notice = '내보내기를 시작했습니다 · $path';
     } on MediaPlatformException catch (error) {
       _mediaEngineMissing = error.isEngineMissing;
       _exportProgress = null;
       _error = error.isEngineMissing
           ? '이 플랫폼의 네이티브 미디어 엔진이 연결되지 않았습니다.\n'
-              'docs/LOCAL_SETUP.md의 "네이티브 미디어 레이어 연결"을 따라 주세요.'
+                'docs/LOCAL_SETUP.md의 "네이티브 미디어 레이어 연결"을 따라 주세요.'
           : error.message;
     } on BridgeException catch (error) {
       _error = error.message;
@@ -555,7 +595,8 @@ class EditorController extends ChangeNotifier {
       final String raw = await _bridge.exportJobCancel(jobJson: jobJson);
       final Map<String, dynamic> envelope = _decodeEnvelope(raw);
       _exportProgress =
-          ExportProgressView.fromJob(_mapOf(envelope['job'])) ?? _exportProgress;
+          ExportProgressView.fromJob(_mapOf(envelope['job'])) ??
+          _exportProgress;
       _exportJobJson = jsonEncode(envelope['job']);
       final bool accepted = await _media.cancelExport();
       if (!accepted) {
@@ -605,8 +646,9 @@ class EditorController extends ChangeNotifier {
       );
       final Map<String, dynamic> envelope = _decodeEnvelope(raw);
       _exportJobJson = jsonEncode(envelope['job']);
-      final ExportProgressView? next =
-          ExportProgressView.fromJob(_mapOf(envelope['job']));
+      final ExportProgressView? next = ExportProgressView.fromJob(
+        _mapOf(envelope['job']),
+      );
       if (next != null) {
         _exportProgress = next;
         if (next.state == 'completed') {

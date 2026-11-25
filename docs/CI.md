@@ -55,17 +55,24 @@ python3 scripts/ci/wire_native.py ios       # Swift 병합 + AppDelegate 등록
 * 앵커 문자열을 찾지 못하면 **파일 내용과 함께 실패**한다. Flutter 템플릿이 바뀌면
   조용히 지나가지 않고 CI에서 바로 드러난다.
 * 여러 번 실행해도 안전하다(이미 적용된 단계는 건너뛴다).
-* Apple(macOS/iOS)은 Xcode 프로젝트(`project.pbxproj`)를 수정하지 않는다. Runner 타깃에
-  이미 포함된 `MainFlutterWindow.swift` / `AppDelegate.swift` 파일 끝에
-  `app/native/apple/*.swift`를 합쳐 컴파일한다(CocoaPods·Ruby 의존 없음).
+* Apple(macOS/iOS)은 Runner 타깃에 이미 포함된 `MainFlutterWindow.swift` /
+  `AppDelegate.swift` 파일 끝에 `app/native/apple/*.swift`를 합쳐 컴파일한다(CocoaPods·Ruby 의존 없음).
+  다만 **Rust 코어 라이브러리 배선은 `project.pbxproj`를 최소한으로 고친다**
+  (macOS: dylib 을 `Contents/Frameworks/` 로 복사 + ad-hoc 서명하는 빌드 단계 추가,
+   iOS: `OTHER_LDFLAGS` 에 `-force_load dist/native/libmuud_core.a` 추가).
+  앵커를 못 찾으면 파일 내용과 함께 실패한다.
   로컬 개발에서는 `docs/LOCAL_SETUP.md` 3.1·3.2절처럼 Xcode에서 직접 파일을 추가하는 편이 낫다.
 * Windows 플러그인은 러너 타깃(`/W4 /WX`, `_HAS_EXCEPTIONS=0`)과 분리해
   **정적 라이브러리**(`/W3 /EHsc`)로 빌드한다. nlohmann/json 이 그 설정과 맞지 않기 때문이다.
 
 ### 3) Rust 코어 크로스 컴파일
 
-`flutter_rust_bridge` 코드 생성은 아직 CI에 넣지 않았다(아래 "알려진 한계").
-대신 **플랫폼별 네이티브 라이브러리를 실제로 빌드**해 링크 가능성을 검증한다.
+`flutter_rust_bridge` 바인딩(`rust_core/src/frb_generated.rs`, `app/lib/src/rust/*`)은
+**생성 결과를 커밋**한다. CI는 코드 생성기를 돌리지 않고, 커밋된 바인딩과 실제
+네이티브 라이브러리가 맞물리는지 **플랫폼별로 빌드**해서 확인한다.
+Android 크로스 빌드의 C 컴파일(dart-sys)은 `.cargo/config.toml` 이
+`scripts/ci/android-cc.sh`(NDK clang 탐색 래퍼)로 처리하므로, 워크플로가 NDK bin 을
+PATH 에 넣지 않아도 된다.
 
 | 플랫폼 | 타깃 | 링커/비고 |
 |---|---|---|
@@ -87,12 +94,12 @@ APK · Windows zip · macOS zip · iOS unsigned zip · `SHA256SUMS.txt`가 첨�
 
 ## 알려진 한계 (CI 기준)
 
-* **flutter_rust_bridge 코드 생성 미연결**: `rust_core`에 `flutter_rust_bridge` 크레이트 의존성과
-  생성된 `frb_generated.rs`가 아직 없다. 지금 앱은 `lib/src/rust/api.dart` 스텁을 쓰므로
-  Rust 코어 호출이 `UnimplementedError`로 끝나고 화면에 "브리지 미생성" 안내가 뜬다.
-  다음 단계: `rust_core/Cargo.toml`에 `flutter_rust_bridge = "=2.13.0"` 추가 →
-  `dart run flutter_rust_bridge_codegen generate` → 생성물 커밋 →
-  `rust_builder` 가 만드는 `build.dart` 훅이 각 플랫폼 빌드에서 코어를 자동 빌드·링크한다.
+* **`flutter test` 는 CI 잡에 없다**: 테스트는 `app/test/`에 있고(FFI 실연결 + UI 흐름),
+  `flutter analyze` 가 타입 검사를 한다. 실행까지 CI에 넣으려면 워크플로에
+  `flutter test` 스텝을 추가해야 한다(워크플로 파일 권한 필요).
+* **코드 생성 자동화 없음**: 스키마를 바꾸면 개발자가
+  `flutter_rust_bridge_codegen generate` 를 돌려 생성물을 커밋해야 한다
+  (CI는 생성물이 Rust/Dart 양쪽에서 컴파일되는지만 검증).
 * **서명 없음**: Android는 템플릿의 debug 서명, iOS는 `--no-codesign`, macOS는 ad-hoc 서명이다.
   배포하려면 keystore·인증서·notarization 을 시크릿으로 넣어야 한다.
 * **FFmpeg 미포함**: Windows 내보내기는 `ffmpeg.exe`/`ffprobe.exe`가 앱 옆에 있어야 한다.

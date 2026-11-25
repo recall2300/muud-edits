@@ -27,7 +27,10 @@ class TimelineView extends StatelessWidget {
     final EditorState? state = controller.state;
     if (state == null) {
       return const Center(
-        child: Text('프로젝트가 없습니다', style: TextStyle(color: EditorPalette.textMuted)),
+        child: Text(
+          '프로젝트가 없습니다',
+          style: TextStyle(color: EditorPalette.textMuted),
+        ),
       );
     }
 
@@ -43,8 +46,10 @@ class TimelineView extends StatelessWidget {
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapDown: (TapDownDetails details) {
-            final ({TrackView track, ClipView clip})? hit =
-                metrics.hitTest(state, details.localPosition);
+            final ({TrackView track, ClipView clip})? hit = metrics.hitTest(
+              state,
+              details.localPosition,
+            );
             controller.selectClip(hit?.clip.id);
             controller.setPlayhead(metrics.timeAt(details.localPosition.dx));
           },
@@ -110,20 +115,19 @@ class TimelineMetrics {
     return clamped > limit ? limit : clamped;
   }
 
-  double topForTrack(int index) => _rulerHeight + index * (_rowHeight + _rowGap);
+  double topForTrack(int index) =>
+      _rulerHeight + index * (_rowHeight + _rowGap);
 
-  double get subtitleLaneTop =>
-      topForTrack(trackCount) + _rowHeight + _rowGap;
+  double get subtitleLaneTop => topForTrack(trackCount) + _rowHeight + _rowGap;
 
-  Rect laneRect(int index) => Rect.fromLTWH(
-        laneLeft,
-        topForTrack(index),
-        contentWidth,
-        _rowHeight,
-      );
+  Rect laneRect(int index) =>
+      Rect.fromLTWH(laneLeft, topForTrack(index), contentWidth, _rowHeight);
 
   /// 좌표에 있는 클립(없으면 null).
-  ({TrackView track, ClipView clip})? hitTest(EditorState state, Offset position) {
+  ({TrackView track, ClipView clip})? hitTest(
+    EditorState state,
+    Offset position,
+  ) {
     for (int index = 0; index < state.tracks.length; index++) {
       final Rect lane = laneRect(index);
       if (position.dy < lane.top || position.dy > lane.bottom) {
@@ -196,10 +200,7 @@ class _TimelinePainter extends CustomPainter {
 
   void _paintTrackLanes(Canvas canvas) {
     final Paint gutter = Paint()..color = EditorPalette.surface;
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, _gutterWidth, metrics.height),
-      gutter,
-    );
+    canvas.drawRect(Rect.fromLTWH(0, 0, _gutterWidth, metrics.height), gutter);
 
     for (int index = 0; index < state.tracks.length; index++) {
       final TrackView track = state.tracks[index];
@@ -389,7 +390,12 @@ class _TimelinePainter extends CustomPainter {
   void _paintRuler(Canvas canvas) {
     final Paint rulerBg = Paint()..color = EditorPalette.surface;
     canvas.drawRect(
-      Rect.fromLTWH(_gutterWidth, 0, metrics.width - _gutterWidth, _rulerHeight),
+      Rect.fromLTWH(
+        _gutterWidth,
+        0,
+        metrics.width - _gutterWidth,
+        _rulerHeight,
+      ),
       rulerBg,
     );
 

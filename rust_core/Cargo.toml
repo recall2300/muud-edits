@@ -1,6 +1,6 @@
 [package]
 name = "muud-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.77"
 description = "muud-edits core: timeline model, edit commands (undo/redo), project persistence and export planning"
@@ -13,6 +13,12 @@ name = "muud_core"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
+# Flutter ↔ Rust 바인딩. app/pubspec.yaml 의 flutter_rust_bridge 와 **정확히 같은 버전**이어야
+# 한다(런타임이 코드젠 버전 일치를 검사한다).
+# flutter_rust_bridge 는 내부적으로 dart_api_dl.c 를 C 컴파일러로 빌드한다(dart-sys).
+# Android 크로스 빌드에서는 NDK clang 이 필요하므로 `.cargo/config.toml` 이 CC_*/AR_* 를
+# `scripts/ci/android-cc.sh` 로 지정한다(기본 feature 를 끄면 코드젠 글루가 컴파일되지 않는다).
+flutter_rust_bridge = "=2.13.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

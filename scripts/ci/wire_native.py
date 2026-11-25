@@ -316,6 +316,119 @@ def add_plist_flag(path: pathlib.Path, key: str) -> None:
     note(f"{path.relative_to(ROOT)} 에 {key} 추가")
 
 
+# ── Apple: Rust 코어 라이브러리 배선 ───────────────────────────────────────────
+#
+# Rust 코어(flutter_rust_bridge)는 다음 두 가지 방식으로 앱에 들어간다.
+#   * macOS: universal dylib 을 `<App>.app/Contents/Frameworks/` 에 넣고 코드 서명한다.
+#            Dart 는 실행 파일 기준 `../Frameworks/libmuud_core.dylib` 를 dlopen 한다.
+#   * iOS:   정적 라이브러리(.a)를 Runner 실행 파일에 링크한다(-force_load).
+#            Dart 는 `ExternalLibrary.process()` 로 프로세스 안의 심볼을 찾는다.
+#
+# 라이브러리 파일은 워크플로의 "Rust 코어" 단계가 `dist/native/` 에 만들어 두고,
+# 이 스크립트는 Xcode 프로젝트가 그 파일을 **빌드 시점에** 가져가도록 배선만 한다.
+
+MUUDPBX_PHASE_ID = "4D555544C0DE000000000001"  # pbxproj 객체 ID(파일 내 유일)
+MUUDPBX_PHASE_NAME = "muud Rust 코어 복사"
+
+MACOS_CORE_COPY_SCRIPT = f"""set -e
+SRC="${{SRCROOT}}/../../dist/native/libmuud_core.dylib"
+DST="${{BUILT_PRODUCTS_DIR}}/${{FRAMEWORKS_FOLDER_PATH}}"
+if [ ! -f "$SRC" ]; then
+  echo "muud: Rust 코어 dylib 이 없습니다: $SRC" >&2
+  exit 1
+fi
+mkdir -p "$DST"
+cp -f "$SRC" "$DST/libmuud_core.dylib"
+# arm64 macOS 는 프로세스가 로드하는 모든 코드에 서명이 필요하다 → ad-hoc 서명.
+codesign --force --sign - "$DST/libmuud_core.dylib"
+echo "muud: libmuud_core.dylib → $DST"
+"""
+
+
+def _pbx_quote(text: str) -> str:
+    """pbxproj 문자열 리터럴로 감싼다(Xcode 는 "..." 안에서 \n 과 \" 를 해석한다)."""
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def add_macos_core_copy_phase(pbxproj: pathlib.Path) -> None:
+    text = read(pbxproj)
+    if MUUDPBX_PHASE_ID in text or MUUDPBX_PHASE_NAME in text:
+        note(f"{pbxproj.relative_to(ROOT)} 는 이미 Rust 코어 복사 단계가 있습니다(건너뜀)")
+        return
+
+    # 1) Runner 타깃의 buildPhases 목록 끝(마지막 ShellScript 뒤)에 단계를 추가한다.
+    runner_anchor = (
+        "\t\t\t\t33CC10EB2044A3C60003C045 /* Resources */,\n"
+        "\t\t\t\t33CC110E2044A8840003C045 /* Bundle Framework */,\n"
+        "\t\t\t\t3399D490228B24CF009A79C7 /* ShellScript */,\n"
+    )
+    if runner_anchor not in text:
+        die(
+            f"{pbxproj.relative_to(ROOT)} 에서 Runner 타깃의 buildPhases 앵커를 찾지 못했습니다.\n"
+            "  상위 Flutter 템플릿의 macOS 프로젝트 구조가 바뀌었는지 확인하세요."
+        )
+    text = text.replace(
+        runner_anchor,
+        runner_anchor + f"\t\t\t\t{MUUDPBX_PHASE_ID} /* {MUUDPBX_PHASE_NAME} */,\n",
+        1,
+    )
+
+    # 2) PBXShellScriptBuildPhase 섹션에 실제 단계를 정의한다.
+    section_anchor = "/* End PBXShellScriptBuildPhase section */"
+    if section_anchor not in text:
+        die(f"{pbxproj.relative_to(ROOT)} 에 PBXShellScriptBuildPhase 섹션이 없습니다.")
+    phase = (
+        f"\t\t{MUUDPBX_PHASE_ID} /* {MUUDPBX_PHASE_NAME} */ = {{\n"
+        "\t\t\tisa = PBXShellScriptBuildPhase;\n"
+        "\t\t\talwaysOutOfDate = 1;\n"
+        "\t\t\tbuildActionMask = 2147483647;\n"
+        "\t\t\tfiles = (\n"
+        "\t\t\t);\n"
+        "\t\t\tinputFileListPaths = (\n"
+        "\t\t\t);\n"
+        "\t\t\tinputPaths = (\n"
+        "\t\t\t);\n"
+        f'\t\t\tname = "{MUUDPBX_PHASE_NAME}";\n'
+        "\t\t\toutputFileListPaths = (\n"
+        "\t\t\t);\n"
+        "\t\t\toutputPaths = (\n"
+        "\t\t\t);\n"
+        "\t\t\trunOnlyForDeploymentPostprocessing = 0;\n"
+        "\t\t\tshellPath = /bin/sh;\n"
+        f"\t\t\tshellScript = {_pbx_quote(MACOS_CORE_COPY_SCRIPT)};\n"
+        "\t\t};\n"
+    )
+    text = text.replace(section_anchor, phase + section_anchor, 1)
+    write(pbxproj, text)
+    note(f"{pbxproj.relative_to(ROOT)} 패치: Rust 코어 dylib 복사 빌드 단계 추가")
+
+
+def add_ios_core_link_flags(pbxproj: pathlib.Path) -> None:
+    text = read(pbxproj)
+    if "libmuud_core.a" in text:
+        note(f"{pbxproj.relative_to(ROOT)} 는 이미 Rust 코어 링크 설정이 있습니다(건너뜀)")
+        return
+
+    anchor = "\t\t\t\tINFOPLIST_FILE = Runner/Info.plist;\n"
+    count = text.count(anchor)
+    if count != 3:
+        die(
+            f"{pbxproj.relative_to(ROOT)} 의 Runner 설정 블록에서 INFOPLIST_FILE 앵커를 "
+            f"{count}번 찾았습니다(3개 Debug/Release/Profile 기대)."
+        )
+    flags = (
+        "\t\t\t\tOTHER_LDFLAGS = (\n"
+        '\t\t\t\t\t"$(inherited)",\n'
+        '\t\t\t\t\t"-force_load",\n'
+        '\t\t\t\t\t"$(SRCROOT)/../../dist/native/libmuud_core.a",\n'
+        "\t\t\t\t);\n"
+    )
+    text = text.replace(anchor, anchor + flags)
+    write(pbxproj, text)
+    note(f"{pbxproj.relative_to(ROOT)} 패치: libmuud_core.a -force_load 링크")
+
+
 def wire_macos() -> None:
     runner = APP / "macos" / "Runner"
     if not runner.is_dir():
@@ -342,6 +455,9 @@ def wire_macos() -> None:
         "NSPhotoLibraryUsageDescription",
         "편집할 사진·영상을 고르기 위해 사진 보관함에 접근합니다.",
     )
+
+    # Rust 코어(dylib)를 앱 번들에 넣는다.
+    add_macos_core_copy_phase(APP / "macos" / "Runner.xcodeproj" / "project.pbxproj")
 
 
 def wire_ios() -> None:
@@ -380,6 +496,9 @@ def wire_ios() -> None:
         "NSPhotoLibraryUsageDescription",
         "편집할 사진·영상을 고르기 위해 사진 보관함에 접근합니다.",
     )
+
+    # Rust 코어(정적 라이브러리)를 Runner 실행 파일에 링크한다.
+    add_ios_core_link_flags(APP / "ios" / "Runner.xcodeproj" / "project.pbxproj")
 
 
 WIRERS = {

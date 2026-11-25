@@ -61,8 +61,12 @@ dart run flutter_rust_bridge_codegen generate   # Rust 바인딩 생성
 flutter run -d macos                            # 또는 windows / android / ios
 ```
 
-> 코드 생성 전에도 `flutter analyze`가 통과하도록 `lib/src/rust/api.dart`에 스텁이 있다.
-> 자세한 순서는 [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md).
+> `lib/src/rust/`의 바인딩은 **커밋되어 있다**(생성 결과 포함). 코드를 바꿨을 때만
+> 다시 생성하면 된다. 자세한 순서는 [`docs/LOCAL_SETUP.md`](docs/LOCAL_SETUP.md).
+>
+> 앱은 시작할 때 플랫폼별 Rust 라이브러리를 직접 찾아 로드한다
+> (`lib/rust_core_loader.dart`): Android `libmuud_core.so`(jniLibs), Windows `muud_core.dll`,
+> macOS `<App>.app/Contents/Frameworks/libmuud_core.dylib`, iOS 정적 링크.
 
 ## CI · 릴리스
 
@@ -107,7 +111,9 @@ muud-edits/
     ├── lib/                   main, bridge_api(상태 관리), core_bridge, commands, models, theme
     ├── lib/media/             media_platform_bridge(MethodChannel/EventChannel)
     ├── lib/editor/            editor_screen, preview_panel, timeline_view, inspector_panel
-    ├── lib/src/rust/          코드 생성 위치(현재는 스텁)
+    ├── lib/src/rust/          flutter_rust_bridge 코드젠 바인딩(커밋됨)
+    ├── lib/rust_core_loader.dart  플랫폼별 코어 라이브러리 로딩
+    ├── test/                  FFI 실연결 테스트 + UI 흐름 위젯 테스트
     └── native/                apple(Swift) · android(Kotlin) · windows(C++) 미디어 엔진
 ```
 

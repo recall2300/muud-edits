@@ -53,31 +53,37 @@ flutter pub get
 
 ## 2. Rust 브리지 생성
 
+**생성 결과는 이미 커밋되어 있다.** `rust_core/src/bridge.rs`나 `flutter_rust_bridge.yaml`을
+바꿨을 때만 다시 생성하면 된다(버전은 `app/pubspec.yaml`·`rust_core/Cargo.toml` 모두 `2.13.0` 고정).
+
 ```bash
 cd app
-dart pub global activate flutter_rust_bridge_codegen   # 최초 1회
-dart run flutter_rust_bridge_codegen generate
+# 방법 A: pub 전역 설치
+dart pub global activate flutter_rust_bridge_codegen 2.13.0
+flutter_rust_bridge_codegen generate
+
+# 방법 B: 릴리스 바이너리(빌드 없이 바로)
+curl -L -o frb.tgz \
+  https://github.com/fzyzcjy/flutter_rust_bridge/releases/download/v2.13.0/flutter_rust_bridge_codegen-x86_64-unknown-linux-gnu-v2.13.0.tgz
+tar xzf frb.tgz && ./flutter_rust_bridge_codegen generate
 ```
 
 생성되는 것:
 
 | 경로 | 내용 |
 |---|---|
-| `lib/src/rust/api.dart` | `rust_core/src/bridge.rs`의 pub 함수 → Dart 함수 (스텁을 덮어쓴다) |
-| `lib/src/rust/frb_generated.dart` | `RustLib.init()` 등 로더 |
+| `lib/src/rust/bridge.dart` | `rust_core/src/bridge.rs`의 pub 함수 → Dart 함수 |
+| `lib/src/rust/frb_generated.dart` | `RustLib.init()` 등 엔트리포인트 |
 | `lib/src/rust/frb_generated.io.dart` | 플랫폼별 라이브러리 로딩 |
-| `rust_builder/` | 코어를 빌드해 앱에 넣는 Flutter 패키지(FRB 2.x 표준) |
+| `rust_core/src/frb_generated.rs` | Rust 쪽 글루(`lib.rs`에 `mod frb_generated;` 자동 주입) |
 
-생성 후 `lib/main.dart`의 주석을 따라 두 줄을 살린다.
+앱은 `lib/main.dart` → `lib/rust_core_loader.dart`에서 플랫폼에 맞는 라이브러리를 직접 연다.
+따라서 `RustLib.init()`을 코드에서 다시 부를 필요가 없다(이미 `loadRustCore()`가 부른다).
 
 ```dart
-import 'src/rust/frb_generated.dart';
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await RustLib.init();      // 네이티브 코어 로드
-  runApp(const MuudEditsApp());
-}
+// lib/main.dart
+await loadRustCore();   // 실패해도 앱은 뜨고 화면에 사유 + "다시 시도"가 나온다
+runApp(const MuudEditsApp());
 ```
 
 > 생성된 Dart 함수의 인자 이름/타입이 `lib/core_bridge.dart`의 호출과 다르면
@@ -291,8 +297,8 @@ cd .. && flutter run -d <iPhone>
 
 | 증상 | 원인 / 해결 |
 |---|---|
-| `UnimplementedError: flutter_rust_bridge_codegen generate …` | 코드 생성 전이다. 2절 실행. |
-| `Invalid argument(s): Failed to load dynamic library` | `RustLib.init()` 누락, 또는 플랫폼 폴더 재생성 후 `rust_builder` 경로가 깨짐 → `flutter clean && flutter pub get`. |
+| `Invalid argument(s): Failed to load dynamic library` | 코어 라이브러리가 앱 옆에 없다. Android=jniLibs `libmuud_core.so`, Windows=`muud_core.dll`(exe 옆), macOS=`Contents/Frameworks/libmuud_core.dylib`, iOS=정적 링크 여부를 확인. |
+| `rust_core_missing` 안내가 화면에 뜸 | 위와 같은 원인(라이브러리 미배치). `flutter test`의 `test/rust_ffi_test.dart`로 로컬 검증 가능. |
 | `cargo: command not found` (빌드 중) | Flutter가 앱 빌드 시 cargo를 찾는다. 셸 PATH에 `~/.cargo/bin` 추가 후 IDE 재시작. |
 | Android: `libmuud_core.so not found` | `cargo ndk` 산출물 경로(`jniLibs`)와 `abiFilters` 불일치. |
 | macOS: 샌드박스에서 미디어 접근 실패 | entitlements + security-scoped bookmark(3.1절). |

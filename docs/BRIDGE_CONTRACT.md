@@ -1,7 +1,7 @@
 # Dart ↔ Rust 브리지 계약
 
 이 문서는 `rust_core/src/bridge.rs`와 `app/lib/` 사이의 **실제 계약**이다.
-브리지를 고칠 때는 이 문서와 `app/lib/src/rust/api.dart`(생성 전 스텁)를 함께 고친다.
+브리지를 고칠 때는 이 문서와 `app/lib/src/rust/bridge.dart`(코드젠 결과)를 함께 본다.
 
 ## 1. 원칙
 
@@ -329,7 +329,7 @@
 
 ## 8. 코드 생성 후 체크리스트
 
-1. `lib/src/rust/api.dart`가 생성 파일로 바뀌었는지 확인(스텁 헤더가 사라진다).
+1. `lib/src/rust/bridge.dart`와 `rust_core/src/frb_generated.rs`가 새로 생성됐는지 확인.
 2. `lib/core_bridge.dart`의 호출 인자 이름이 생성 시그니처와 맞는지 확인
    (FRB는 snake_case → camelCase, `&str` → `String`, `Option<T>` → `T?`로 만든다).
 3. `main()`에 `await RustLib.init();` 추가.

@@ -52,14 +52,15 @@ class EditorPalette {
 }
 
 ThemeData buildEditorTheme() {
-  final ColorScheme scheme = ColorScheme.fromSeed(
-    seedColor: EditorPalette.accent,
-    brightness: Brightness.dark,
-  ).copyWith(
-    surface: EditorPalette.surface,
-    primary: EditorPalette.accent,
-    outline: EditorPalette.outline,
-  );
+  final ColorScheme scheme =
+      ColorScheme.fromSeed(
+        seedColor: EditorPalette.accent,
+        brightness: Brightness.dark,
+      ).copyWith(
+        surface: EditorPalette.surface,
+        primary: EditorPalette.accent,
+        outline: EditorPalette.outline,
+      );
 
   return ThemeData(
     useMaterial3: true,

@@ -99,8 +99,7 @@ class PreviewPanel extends StatelessWidget {
                     right: 10,
                     top: 8,
                     child: _Badge(
-                      text:
-                          '${state.width}x${state.height} · ${state.fps}fps',
+                      text: '${state.width}x${state.height} · ${state.fps}fps',
                     ),
                   ),
                 ],

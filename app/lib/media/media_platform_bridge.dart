@@ -47,11 +47,7 @@ abstract class MediaPlatformBridge {
   Future<bool> cancelExport();
 
   /// 썸네일(JPEG/PNG 바이트). 실패하면 null.
-  Future<Uint8List?> thumbnail(
-    String path, {
-    int atMs = 0,
-    int maxWidth = 320,
-  });
+  Future<Uint8List?> thumbnail(String path, {int atMs = 0, int maxWidth = 320});
 
   /// 플랫폼 미디어 엔진 정보(없으면 빈 맵).
   Future<Map<String, dynamic>> platformInfo();
@@ -87,8 +83,9 @@ class MediaExportEvent {
   bool get isFinished => event == 'completed' || event == 'failed';
 
   static MediaExportEvent fromMap(Object? value) {
-    final Map<Object?, Object?> raw =
-        value is Map ? value : const <Object?, Object?>{};
+    final Map<Object?, Object?> raw = value is Map
+        ? value
+        : const <Object?, Object?>{};
     final Map<String, dynamic> map = raw.map(
       (Object? key, Object? val) => MapEntry(key.toString(), val),
     );
@@ -118,19 +115,18 @@ class MediaExportEvent {
 /// * Windows: `native/windows/muud_media_plugin.cpp`
 class MethodChannelMediaBridge implements MediaPlatformBridge {
   MethodChannelMediaBridge({MethodChannel? methods, EventChannel? events})
-      : _methods = methods ?? const MethodChannel('muud_edits/media'),
-        _events = events ?? const EventChannel('muud_edits/export_progress');
+    : _methods = methods ?? const MethodChannel('muud_edits/media'),
+      _events = events ?? const EventChannel('muud_edits/export_progress');
 
   final MethodChannel _methods;
   final EventChannel _events;
   Stream<MediaExportEvent>? _progress;
 
   @override
-  Stream<MediaExportEvent> get progressStream =>
-      _progress ??= _events
-          .receiveBroadcastStream()
-          .map(MediaExportEvent.fromMap)
-          .handleError((Object error) {
+  Stream<MediaExportEvent> get progressStream => _progress ??= _events
+      .receiveBroadcastStream()
+      .map(MediaExportEvent.fromMap)
+      .handleError((Object error) {
         // 네이티브 쪽 프로세스가 죽어도 앱은 살아 있어야 한다.
         throw MediaPlatformException('stream_error', '$error');
       });
@@ -138,10 +134,10 @@ class MethodChannelMediaBridge implements MediaPlatformBridge {
   @override
   Future<Map<String, dynamic>> probe(String path) async {
     try {
-      final Map<Object?, Object?>? result =
-          await _methods.invokeMapMethod<Object?, Object?>('probe', <String, dynamic>{
-        'path': path,
-      });
+      final Map<Object?, Object?>? result = await _methods
+          .invokeMapMethod<Object?, Object?>('probe', <String, dynamic>{
+            'path': path,
+          });
       if (result == null) {
         throw MediaPlatformException('probe_empty', '프로브 결과가 비어 있습니다');
       }
@@ -187,14 +183,10 @@ class MethodChannelMediaBridge implements MediaPlatformBridge {
   @override
   Future<bool> cancelExport() async {
     try {
-      final bool? accepted =
-          await _methods.invokeMethod<bool>('cancelExport');
+      final bool? accepted = await _methods.invokeMethod<bool>('cancelExport');
       return accepted ?? false;
     } on PlatformException catch (error) {
-      throw MediaPlatformException(
-        error.code,
-        error.message ?? '취소하지 못했습니다',
-      );
+      throw MediaPlatformException(error.code, error.message ?? '취소하지 못했습니다');
     } on MissingPluginException {
       return false;
     }
@@ -207,11 +199,10 @@ class MethodChannelMediaBridge implements MediaPlatformBridge {
     int maxWidth = 320,
   }) async {
     try {
-      return await _methods.invokeMethod<Uint8List>('thumbnail', <String, dynamic>{
-        'path': path,
-        'atMs': atMs,
-        'maxWidth': maxWidth,
-      });
+      return await _methods.invokeMethod<Uint8List>(
+        'thumbnail',
+        <String, dynamic>{'path': path, 'atMs': atMs, 'maxWidth': maxWidth},
+      );
     } on PlatformException {
       return null;
     } on MissingPluginException {
@@ -318,10 +309,11 @@ class FakeMediaPlatformBridge implements MediaPlatformBridge {
     String path, {
     int atMs = 0,
     int maxWidth = 320,
-  }) async =>
-      null;
+  }) async => null;
 
   @override
-  Future<Map<String, dynamic>> platformInfo() async =>
-      <String, dynamic>{'api': 'fake', 'supports_export': true};
+  Future<Map<String, dynamic>> platformInfo() async => <String, dynamic>{
+    'api': 'fake',
+    'supports_export': true,
+  };
 }

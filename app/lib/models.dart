@@ -129,9 +129,9 @@ class EditorState {
       raw: state,
       summary: ProjectSummary.fromJson(summaryJson),
       tracks: _mapList(project['tracks']).map(TrackView.fromJson).toList(),
-      subtitles: _mapList(_map(project['subtitles'])['items'])
-          .map(SubtitleView.fromJson)
-          .toList(),
+      subtitles: _mapList(
+        _map(project['subtitles'])['items'],
+      ).map(SubtitleView.fromJson).toList(),
     );
   }
 
@@ -238,12 +238,15 @@ class ProjectSummary {
 
   static ProjectSummary fromJson(Map<String, dynamic> json) {
     final Map<String, dynamic> resolution = _map(json['resolution']);
-    final String? filePath =
-        json['file_path'] is String ? json['file_path'] as String : null;
-    final String? undoLabel =
-        json['undo_label'] is String ? json['undo_label'] as String : null;
-    final String? redoLabel =
-        json['redo_label'] is String ? json['redo_label'] as String : null;
+    final String? filePath = json['file_path'] is String
+        ? json['file_path'] as String
+        : null;
+    final String? undoLabel = json['undo_label'] is String
+        ? json['undo_label'] as String
+        : null;
+    final String? redoLabel = json['redo_label'] is String
+        ? json['redo_label'] as String
+        : null;
 
     return ProjectSummary(
       id: _string(json['id']),
@@ -328,10 +331,10 @@ class TrackView {
 
   /// 트랙에서 가장 늦게 끝나는 클립의 타임라인 위치(ms). 클립이 없으면 0.
   int get durationMs => clips.fold<int>(
-        0,
-        (int maxEnd, ClipView clip) =>
-            clip.endOffsetMs > maxEnd ? clip.endOffsetMs : maxEnd,
-      );
+    0,
+    (int maxEnd, ClipView clip) =>
+        clip.endOffsetMs > maxEnd ? clip.endOffsetMs : maxEnd,
+  );
 
   static TrackView fromJson(Map<String, dynamic> json) {
     return TrackView(
@@ -396,8 +399,9 @@ class ClipView {
 
   static ClipView fromJson(Map<String, dynamic> json) {
     final Map<String, dynamic> text = _map(json['text']);
-    final String? content =
-        text['content'] is String ? text['content'] as String : null;
+    final String? content = text['content'] is String
+        ? text['content'] as String
+        : null;
     double speed = _double(json['speed'], 1);
     if (speed <= 0) {
       speed = 1;
@@ -537,8 +541,10 @@ class MediaProbe {
   final double fps;
   final bool hasVideo;
   final bool hasAudio;
+
   /// `video` | `audio` | `image` | `unknown`
   final String mediaType;
+
   /// `video` | `audio` | `image` (null이면 클립을 만들 수 없다)
   final String? clipKind;
   final int? suggestedEndMs;
@@ -566,8 +572,8 @@ class MediaProbe {
     final String? clipKind = rawKind is String && rawKind.isNotEmpty
         ? rawKind
         : (mediaType == 'video' || mediaType == 'audio' || mediaType == 'image'
-            ? mediaType
-            : null);
+              ? mediaType
+              : null);
     final Object? rawEnd = envelope['suggested_end_ms'];
     return MediaProbe(
       path: _string(probe['path']),
@@ -706,7 +712,9 @@ class ExportProgressView {
       percent: _double(progress['percent']),
       etaMs: rawEta is num ? rawEta.round() : null,
       cancelRequested: _bool(progress['cancel_requested']),
-      message: progress['message'] is String ? progress['message'] as String : null,
+      message: progress['message'] is String
+          ? progress['message'] as String
+          : null,
       error: progress['error'] is String ? progress['error'] as String : null,
     );
   }

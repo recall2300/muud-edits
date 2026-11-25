@@ -15,16 +15,22 @@ import 'timeline_view.dart';
 ///
 /// 레이아웃: [프리뷰] → [트랜스포트] → [타임라인] → (선택 시) [인스펙터]
 class EditorScreen extends StatefulWidget {
-  const EditorScreen({super.key});
+  const EditorScreen({super.key, this.controller});
+
+  /// 테스트에서 가짜 브리지를 끼울 때 쓴다. 없으면 실제 Rust 코어를 쓴다.
+  final EditorController? controller;
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
 }
 
 class _EditorScreenState extends State<EditorScreen> {
-  late final EditorController _controller = EditorController();
+  late final EditorController _controller =
+      widget.controller ?? EditorController();
   Timer? _playTimer;
   bool _playing = false;
+
+  bool get _ownsController => widget.controller == null;
 
   @override
   void initState() {
@@ -38,7 +44,9 @@ class _EditorScreenState extends State<EditorScreen> {
   @override
   void dispose() {
     _playTimer?.cancel();
-    _controller.dispose();
+    if (_ownsController) {
+      _controller.dispose();
+    }
     super.dispose();
   }
 
@@ -53,7 +61,9 @@ class _EditorScreenState extends State<EditorScreen> {
       return;
     }
     setState(() => _playing = true);
-    _playTimer = Timer.periodic(const Duration(milliseconds: 33), (Timer timer) {
+    _playTimer = Timer.periodic(const Duration(milliseconds: 33), (
+      Timer timer,
+    ) {
       final int next = _controller.playheadMs + 33;
       if (next >= _controller.durationMs) {
         _controller.setPlayhead(_controller.durationMs);
@@ -87,13 +97,42 @@ class _EditorScreenState extends State<EditorScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('저장하지 못했습니다: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('저장하지 못했습니다: $error')));
     }
   }
 
-  /// 파일 선택 → 프로브 → 클립 추가. 파일 선택기를 쓸 수 없으면 수동 입력.
+  /// 새 프로젝트. 저장하지 않은 편집이 있으면 먼저 확인한다.
+  Future<void> _newProject() async {
+    final bool dirty = _controller.state?.summary.dirty ?? false;
+    if (dirty) {
+      final bool? confirmed = await showDialog<bool>(
+        context: context,
+        builder: (BuildContext context) => AlertDialog(
+          backgroundColor: EditorPalette.surface,
+          title: const Text('새 프로젝트'),
+          content: const Text('저장하지 않은 편집이 있습니다. 버리고 새로 시작할까요?'),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('취소'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('새로 시작'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) {
+        return;
+      }
+    }
+    await _controller.newProject();
+  }
+
+  /// 파일 선택 → 프로브 → 클립 추가. 파일 선택기를 쓸 수 없으면 수동 입력。
   Future<void> _addMedia() async {
     PlatformFile? picked;
     try {
@@ -112,9 +151,9 @@ class _EditorScreenState extends State<EditorScreen> {
     final String? path = picked.path;
     if (path == null || path.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('파일 경로를 읽지 못했습니다')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('파일 경로를 읽지 못했습니다')));
       }
       return;
     }
@@ -126,8 +165,9 @@ class _EditorScreenState extends State<EditorScreen> {
     final TextEditingController pathController = TextEditingController(
       text: '/media/clip.mp4',
     );
-    final TextEditingController lengthController =
-        TextEditingController(text: '5');
+    final TextEditingController lengthController = TextEditingController(
+      text: '5',
+    );
     String kind = 'video';
 
     final bool? confirmed = await showDialog<bool>(
@@ -158,8 +198,14 @@ class _EditorScreenState extends State<EditorScreen> {
                       const SizedBox(width: 12),
                       SegmentedButton<String>(
                         segments: const <ButtonSegment<String>>[
-                          ButtonSegment<String>(value: 'video', label: Text('영상')),
-                          ButtonSegment<String>(value: 'audio', label: Text('오디오')),
+                          ButtonSegment<String>(
+                            value: 'video',
+                            label: Text('영상'),
+                          ),
+                          ButtonSegment<String>(
+                            value: 'audio',
+                            label: Text('오디오'),
+                          ),
                         ],
                         selected: <String>{kind},
                         onSelectionChanged: (Set<String> value) {
@@ -339,15 +385,24 @@ class _EditorScreenState extends State<EditorScreen> {
                   ),
                 ),
               IconButton(
+                tooltip: '새 프로젝트',
+                onPressed: _controller.ready ? _newProject : null,
+                icon: const Icon(Icons.add_box_outlined),
+              ),
+              IconButton(
                 tooltip: summary?.undoLabel == null
                     ? '되돌리기'
                     : '되돌리기 (${summary?.undoLabel})',
-                onPressed: (summary?.canUndo ?? false) ? _controller.undo : null,
+                onPressed: (summary?.canUndo ?? false)
+                    ? _controller.undo
+                    : null,
                 icon: const Icon(Icons.undo),
               ),
               IconButton(
                 tooltip: '다시 적용',
-                onPressed: (summary?.canRedo ?? false) ? _controller.redo : null,
+                onPressed: (summary?.canRedo ?? false)
+                    ? _controller.redo
+                    : null,
                 icon: const Icon(Icons.redo),
               ),
               IconButton(
@@ -372,6 +427,10 @@ class _EditorScreenState extends State<EditorScreen> {
                   message: _controller.error!,
                   isError: true,
                   onClose: _controller.clearMessages,
+                  retryLabel: _controller.ready ? null : '다시 시도',
+                  onRetry: _controller.ready
+                      ? null
+                      : () => unawaited(_controller.bootstrap()),
                 ),
               if (_controller.notice != null)
                 _MessageBar(
@@ -379,7 +438,19 @@ class _EditorScreenState extends State<EditorScreen> {
                   isError: false,
                   onClose: _controller.clearMessages,
                 ),
-              Expanded(child: PreviewPanel(controller: _controller)),
+              Expanded(
+                child:
+                    (summary != null &&
+                        summary.clipCount == 0 &&
+                        summary.subtitleCount == 0)
+                    ? _StartView(
+                        onAddMedia: _controller.ready ? _addMedia : null,
+                        onAddText: _controller.ready ? _addText : null,
+                        onAddSubtitle: _controller.ready ? _addSubtitle : null,
+                        onExport: _controller.ready ? _openExportSheet : null,
+                      )
+                    : PreviewPanel(controller: _controller),
+              ),
               _buildTransport(summary),
               SizedBox(
                 height: 206,
@@ -472,15 +543,23 @@ class _MessageBar extends StatelessWidget {
     required this.message,
     required this.isError,
     required this.onClose,
+    this.retryLabel,
+    this.onRetry,
   });
 
   final String message;
   final bool isError;
   final VoidCallback onClose;
 
+  /// 오류 배너에 붙는 복구 버튼(예: 코어 재시도). 없으면 표시하지 않는다.
+  final String? retryLabel;
+  final VoidCallback? onRetry;
+
   @override
   Widget build(BuildContext context) {
-    final Color color = isError ? EditorPalette.playhead : EditorPalette.audioTrack;
+    final Color color = isError
+        ? EditorPalette.playhead
+        : EditorPalette.audioTrack;
     return Container(
       width: double.infinity,
       color: color.withValues(alpha: 0.14),
@@ -500,6 +579,18 @@ class _MessageBar extends StatelessWidget {
               style: TextStyle(color: color, fontSize: 11, height: 1.35),
             ),
           ),
+          if (onRetry != null)
+            TextButton(
+              onPressed: onRetry,
+              style: TextButton.styleFrom(
+                foregroundColor: color,
+                visualDensity: VisualDensity.compact,
+              ),
+              child: Text(
+                retryLabel ?? '다시 시도',
+                style: const TextStyle(fontSize: 11),
+              ),
+            ),
           IconButton(
             onPressed: onClose,
             iconSize: 14,
@@ -660,7 +751,8 @@ class _ExportSheet extends StatelessWidget {
                     const Spacer(),
                     if (controller.exportProgress?.isRunning ?? false)
                       OutlinedButton.icon(
-                        onPressed: (controller.exportProgress?.canCancel ?? false)
+                        onPressed:
+                            (controller.exportProgress?.canCancel ?? false)
                             ? () => unawaited(controller.cancelExport())
                             : null,
                         icon: const Icon(Icons.close, size: 16),
@@ -704,8 +796,8 @@ class _ExportSheet extends StatelessWidget {
     final Color color = progress.state == 'failed'
         ? EditorPalette.playhead
         : (progress.state == 'completed'
-            ? EditorPalette.audioTrack
-            : EditorPalette.accent);
+              ? EditorPalette.audioTrack
+              : EditorPalette.accent);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -753,7 +845,8 @@ class _ExportSheet extends StatelessWidget {
               ),
             ),
           ),
-        if (progress.state == 'completed' && controller.exportOutputPath != null)
+        if (progress.state == 'completed' &&
+            controller.exportOutputPath != null)
           Padding(
             padding: const EdgeInsets.only(top: 6),
             child: SelectableText(
@@ -762,6 +855,170 @@ class _ExportSheet extends StatelessWidget {
                 color: EditorPalette.textMuted,
                 fontSize: 10,
               ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// 빈 프로젝트에서 처음 켠 사용자가 바로 시작할 수 있게 하는 안내 화면.
+///
+/// 프리뷰 자리를 대신 채우며, 첫 화면에서 눈에 띄는 단일 행동(영상 추가)을 준다.
+class _StartView extends StatelessWidget {
+  const _StartView({
+    required this.onAddMedia,
+    required this.onAddText,
+    required this.onAddSubtitle,
+    required this.onExport,
+  });
+
+  final VoidCallback? onAddMedia;
+  final VoidCallback? onAddText;
+  final VoidCallback? onAddSubtitle;
+  final VoidCallback? onExport;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: EditorPalette.accent.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Icon(
+                  Icons.movie_filter_outlined,
+                  color: EditorPalette.accent,
+                  size: 30,
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                '새 프로젝트가 준비됐어요',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: EditorPalette.text,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                '영상을 고르면 길이·해상도를 읽어 타임라인에 놓습니다.\n'
+                '자르고, 자막을 얹고, 워터마크 없이 내보내세요.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: EditorPalette.textMuted,
+                  fontSize: 11,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: onAddMedia,
+                icon: const Icon(Icons.video_call_outlined, size: 18),
+                label: const Text('영상 · 사진 추가'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(44),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onAddText,
+                      icon: const Icon(Icons.title, size: 16),
+                      label: const Text('텍스트'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onAddSubtitle,
+                      icon: const Icon(Icons.subtitles_outlined, size: 16),
+                      label: const Text('자막'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: onExport,
+                      icon: const Icon(Icons.ios_share, size: 16),
+                      label: const Text('내보내기'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const _StepHints(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 1-2-3 안내(처음 쓰는 사람이 다음 순서를 알 수 있게).
+class _StepHints extends StatelessWidget {
+  const _StepHints();
+
+  static const List<(String, String)> _steps = <(String, String)>[
+    ('1', '미디어 추가 — 갤러리에서 영상이나 사진을 고릅니다'),
+    ('2', '타임라인 편집 — 재생 헤드에서 자르고, 텍스트·자막을 얹습니다'),
+    ('3', '내보내기 — 기기 하드웨어 인코더로 저장합니다'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        for (final (String number, String text) in _steps)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Container(
+                  width: 16,
+                  height: 16,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: EditorPalette.surfaceHigh,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    number,
+                    style: const TextStyle(
+                      color: EditorPalette.textMuted,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    text,
+                    style: const TextStyle(
+                      color: EditorPalette.textMuted,
+                      fontSize: 10,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
       ],

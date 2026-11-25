@@ -63,10 +63,14 @@ class InspectorPanel extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 8),
-        _InfoRow(label: '소스', value: clip.sourcePath.isEmpty ? '(텍스트)' : clip.sourcePath),
+        _InfoRow(
+          label: '소스',
+          value: clip.sourcePath.isEmpty ? '(텍스트)' : clip.sourcePath,
+        ),
         _InfoRow(
           label: '소스 구간',
-          value: '${formatTimecode(clip.startMs)} → ${formatTimecode(clip.endMs)}',
+          value:
+              '${formatTimecode(clip.startMs)} → ${formatTimecode(clip.endMs)}',
         ),
         _InfoRow(
           label: '타임라인',

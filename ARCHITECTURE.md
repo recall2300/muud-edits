@@ -460,8 +460,8 @@ muud-edits/
     ├── lib/bridge_api.dart  ← EditorController(상태 관리·액션·내보내기 흐름)
     ├── lib/media/media_platform_bridge.dart ← MethodChannel/EventChannel 미디어 경계
     ├── lib/editor/{editor_screen,preview_panel,timeline_view,inspector_panel}.dart
-    ├── lib/src/rust/        ← 코드 생성 위치(현재 스텁 api.dart + README)
-    ├── rust_builder/        ← FRB가 생성할 빌드 훅 패키지 자리
+    ├── lib/src/rust/        ← flutter_rust_bridge 코드젠 바인딩(커밋됨)
+    ├── lib/rust_core_loader.dart ← 플랫폼별 코어 라이브러리 로딩
     └── native/              ← 4플랫폼 네이티브 미디어 엔진(스캐폴딩 + 파이프라인)
         ├── README.md        ← 채널 계약·연결·한계
         ├── apple/           ← macOS+iOS Swift (AVFoundation/VideoToolbox)

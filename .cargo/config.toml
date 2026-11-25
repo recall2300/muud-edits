@@ -1,0 +1,18 @@
+# cargo 설정: Android 크로스 빌드에서 C 컴파일러(NDK clang)를 찾아 준다.
+#
+# 왜 필요한가
+#   flutter_rust_bridge → dart-sys 가 `dart_api_dl.c` 를 cc 크레이트로 컴파일한다.
+#   cc 크레이트는 `aarch64-linux-android21-clang` 처럼 **PATH 에 있는** NDK 컴파일러를
+#   찾는데, CI 러너와 대부분의 개발 PC 는 NDK bin 디렉터리를 PATH 에 넣지 않는다.
+#   그래서 타깃별 CC_*/AR_* 를 NDK 위치를 스스로 찾는 래퍼 스크립트로 지정한다.
+#
+#   (GitHub Actions 의 Android 빌드처럼 CARGO_TARGET_*_LINKER 만 지정된 환경에서도 동작한다.)
+[env]
+CC_aarch64_linux_android = { value = "scripts/ci/android-cc.sh", relative = true }
+CC_armv7_linux_androideabi = { value = "scripts/ci/android-cc.sh", relative = true }
+CC_x86_64_linux_android = { value = "scripts/ci/android-cc.sh", relative = true }
+CC_i686_linux_android = { value = "scripts/ci/android-cc.sh", relative = true }
+AR_aarch64_linux_android = { value = "scripts/ci/android-ar.sh", relative = true }
+AR_armv7_linux_androideabi = { value = "scripts/ci/android-ar.sh", relative = true }
+AR_x86_64_linux_android = { value = "scripts/ci/android-ar.sh", relative = true }
+AR_i686_linux_android = { value = "scripts/ci/android-ar.sh", relative = true }

@@ -1,0 +1,169 @@
+// 편집 화면 UI 흐름 테스트.
+//
+// 가짜 코어 브리지(FakeCoreBridge)를 끼워서, 앱을 처음 켠 사용자가
+// "새 프로젝트 → 미디어 추가 → 편집 → 되돌리기 → 내보내기"를 막힘없이
+// 지나갈 수 있는지 화면 단위로 확인한다.
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:muud_edits/bridge_api.dart';
+import 'package:muud_edits/editor/editor_screen.dart';
+import 'package:muud_edits/media/media_platform_bridge.dart';
+import 'package:muud_edits/rust_core_loader.dart';
+import 'package:muud_edits/theme.dart';
+
+import 'support/fake_core_bridge.dart';
+
+Future<EditorController> _pumpEditor(
+  WidgetTester tester, {
+  FakeCoreBridge? bridge,
+  FakeMediaPlatformBridge? media,
+}) async {
+  // 테스트 환경에는 실제 코어 라이브러리가 없으므로 "로드됨"으로 표시한다
+  // (FrbCoreBridge 대신 FakeCoreBridge를 쓰기 때문).
+  rustCore = const RustCoreLoadResult(loadedFrom: 'test');
+  final EditorController controller = EditorController(
+    bridge: bridge ?? FakeCoreBridge(),
+    media: media ?? FakeMediaPlatformBridge(),
+  );
+  addTearDown(controller.dispose);
+
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: buildEditorTheme(),
+      home: EditorScreen(controller: controller),
+    ),
+  );
+  // bootstrap()은 첫 프레임 뒤에 돈다.
+  await tester.pumpAndSettle();
+  return controller;
+}
+
+void main() {
+  // 내보내기 경로는 path_provider 플러그인에서 온다. 테스트에는 플러그인이 없으므로
+  // 문서 디렉터리를 흉내 내 준다(이게 없으면 내보내기가 시작되지 않는다).
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('plugins.flutter.io/path_provider'),
+          (MethodCall call) async => '/tmp/muud-edits-test',
+        );
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('plugins.flutter.io/path_provider'),
+          null,
+        );
+  });
+
+  testWidgets('첫 화면에서 새 프로젝트가 자동으로 준비되고 시작 안내가 보인다', (
+    WidgetTester tester,
+  ) async {
+    final EditorController controller = await _pumpEditor(tester);
+
+    expect(controller.ready, isTrue);
+    expect(find.text('새 프로젝트'), findsWidgets); // 앱바 제목
+    expect(find.text('새 프로젝트가 준비됐어요'), findsOneWidget);
+    expect(find.text('영상 · 사진 추가'), findsOneWidget);
+    // 초기화 안내(개발자용 오류)가 아니라 정상 연결 안내가 보여야 한다.
+    expect(find.textContaining('flutter_rust_bridge_codegen'), findsNothing);
+    expect(controller.error, isNull);
+  });
+
+  testWidgets('미디어 추가 → 타임라인 반영 → 되돌리기', (WidgetTester tester) async {
+    final EditorController controller = await _pumpEditor(tester);
+
+    await controller.addMediaFile('/media/first.mp4');
+    await tester.pumpAndSettle();
+
+    expect(controller.state!.summary.clipCount, 1);
+    expect(controller.durationMs, 4000); // FakeMediaPlatformBridge 프로브: 4000ms
+    expect(find.text('영상 · 사진 추가'), findsNothing); // 빈 상태 안내는 사라진다
+
+    await controller.undo();
+    await tester.pumpAndSettle();
+    expect(controller.state!.summary.clipCount, 0);
+    expect(find.text('영상 · 사진 추가'), findsOneWidget);
+  });
+
+  testWidgets('텍스트·자막을 추가하면 프리뷰와 요약에 반영된다', (WidgetTester tester) async {
+    final EditorController controller = await _pumpEditor(tester);
+
+    await controller.addTextOverlay('안녕하세요');
+    await controller.addSubtitleHere('첫 자막');
+    await tester.pumpAndSettle();
+
+    expect(controller.state!.summary.clipCount, 1);
+    expect(controller.state!.summary.subtitleCount, 1);
+    expect(find.text('안녕하세요'), findsOneWidget);
+    expect(find.text('첫 자막'), findsWidgets);
+  });
+
+  testWidgets('새 프로젝트 버튼은 편집 내용을 버리기 전에 확인한다', (WidgetTester tester) async {
+    final EditorController controller = await _pumpEditor(tester);
+    await controller.addMediaFile('/media/first.mp4');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('새 프로젝트'));
+    await tester.pumpAndSettle();
+    expect(find.text('저장하지 않은 편집이 있습니다. 버리고 새로 시작할까요?'), findsOneWidget);
+
+    await tester.tap(find.text('취소'));
+    await tester.pumpAndSettle();
+    expect(controller.state!.summary.clipCount, 1);
+
+    await tester.tap(find.byTooltip('새 프로젝트'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('새로 시작'));
+    await tester.pumpAndSettle();
+    expect(controller.state!.summary.clipCount, 0);
+  });
+
+  testWidgets('내보내기 시트가 렌더 그래프와 계획을 보여 준다', (WidgetTester tester) async {
+    final FakeMediaPlatformBridge media = FakeMediaPlatformBridge();
+    final EditorController controller = await _pumpEditor(tester, media: media);
+    await controller.addMediaFile('/media/first.mp4');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('내보내기'));
+    // 시트에는 진행률 위젯(계속 도는 애니메이션)이 있어 pumpAndSettle 대신 고정 pump.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('내보내기 계획'), findsOneWidget);
+    expect(controller.lastPlan, isNotNull);
+    expect(controller.lastRenderPlan, isNotNull);
+
+    await tester.tap(find.text('내보내기 시작'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(controller.error, isNull);
+    expect(media.exportStarted, isTrue);
+    expect(media.lastOutputPath, contains('muud-edits-export-'));
+  });
+
+  testWidgets('코어가 없으면 안내와 다시 시도 버튼이 뜬다', (WidgetTester tester) async {
+    // 실제 FrbCoreBridge + 미로딩 상태 그대로(라이브러리 없는 환경과 같은 조건).
+    rustCore = const RustCoreLoadResult(error: '코어 라이브러리를 찾지 못했습니다');
+    final EditorController controller = EditorController(
+      media: FakeMediaPlatformBridge(),
+    );
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildEditorTheme(),
+        home: EditorScreen(controller: controller),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.ready, isFalse);
+    expect(find.textContaining('코어 라이브러리를 찾지 못했습니다'), findsOneWidget);
+    expect(find.text('다시 시도'), findsOneWidget);
+    // 예전에 사용자가 본 개발자용 안내가 다시 나오면 안 된다.
+    expect(find.textContaining('UnimplementedError'), findsNothing);
+  });
+}

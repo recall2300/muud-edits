@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
 
 import 'editor/editor_screen.dart';
+import 'rust_core_loader.dart';
 import 'theme.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Rust 코어를 먼저 깨운다. 실패해도 앱은 뜨고, 화면이 사유와 함께 안내한다.
+  await loadRustCore();
+
   runApp(const MuudEditsApp());
 }
 
@@ -20,18 +26,3 @@ class MuudEditsApp extends StatelessWidget {
     );
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 코드 생성 후 해야 할 일 (docs/LOCAL_SETUP.md 3단계)
-//
-//   import 'src/rust/frb_generated.dart';
-//
-//   void main() async {
-//     WidgetsFlutterBinding.ensureInitialized();
-//     await RustLib.init();          // ← 네이티브 라이브러리 로드
-//     runApp(const MuudEditsApp());
-//   }
-//
-// 지금은 스텁(src/rust/api.dart)만 있어 코어 호출이 UnimplementedError로 끝나고,
-// 화면 상단에 "브리지 미생성" 안내가 뜬다.
-// ─────────────────────────────────────────────────────────────────────────────

@@ -18,7 +18,9 @@
 //! 모든 시간은 **정수 밀리초**(`i64`)이고, 편집은 **커맨드**로만 일어나며,
 //! 각 커맨드는 자신의 역 커맨드를 돌려주므로 undo/redo가 대칭적으로 동작한다.
 
-#![forbid(unsafe_code)]
+// 코어 로직은 unsafe 없이 작성한다. `forbid` 대신 `deny` 를 쓰는 이유는
+// flutter_rust_bridge 코드젠 글루(frb_generated.rs)만 예외로 허용하기 위해서다.
+#![deny(unsafe_code)]
 
 pub mod bridge;
 pub mod commands;
@@ -34,6 +36,11 @@ pub mod project_io;
 pub mod render_plan;
 pub mod subtitles;
 pub mod timeline;
+
+// flutter_rust_bridge 코드젠 글루 (Dart ↔ Rust FFI). 생성 파일은 직접 고치지 않는다.
+// `dart run flutter_rust_bridge_codegen generate` 로 다시 만든다.
+#[allow(unsafe_code)]
+mod frb_generated;
 
 pub use commands::{AppliedCommand, CommandOutcome, EditCommand, History};
 pub use editor::Editor;
