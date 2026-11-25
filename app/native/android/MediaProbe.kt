@@ -65,10 +65,10 @@ object MediaProbe {
             retriever.metadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
                 ?.toLongOrNull()
                 ?.let { result["bitrate_kbps"] = (it / 1000).toInt() }
+            // METADATA_KEY_MIMETYPE 는 컨테이너/비디오 MIME 이다.
+            // (오디오 코덱 전용 키(METADATA_KEY_AUDIO_CODEC)는 Android SDK에 없다.)
             retriever.metadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
                 ?.let { result["video_codec"] = it }
-            retriever.metadata(MediaMetadataRetriever.METADATA_KEY_AUDIO_CODEC)
-                ?.let { result["audio_codec"] = it }
 
             if (!hasVideo && !hasAudio) {
                 // 이미지 파일: BitmapFactory로 크기만 읽는다.

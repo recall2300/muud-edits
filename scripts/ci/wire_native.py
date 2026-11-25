@@ -195,7 +195,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         // muud 미디어 채널 (MethodChannel muud_edits/media + EventChannel muud_edits/export_progress)
-        MuudMediaPlugin.registerWith(flutterEngine)
+        MuudMediaPlugin.registerWith(this, flutterEngine)
     }
 }
 """

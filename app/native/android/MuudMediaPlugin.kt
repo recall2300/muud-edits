@@ -21,7 +21,7 @@ import java.util.concurrent.Executors
  * ```kotlin
  * override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
  *     super.configureFlutterEngine(flutterEngine)
- *     MuudMediaPlugin.registerWith(flutterEngine)
+ *     MuudMediaPlugin.registerWith(this, flutterEngine)   // this: Activity(Context)
  * }
  * ```
  */
@@ -34,10 +34,11 @@ class MuudMediaPlugin private constructor(
         const val METHOD_CHANNEL = "muud_edits/media"
         const val EVENT_CHANNEL = "muud_edits/export_progress"
 
+        // Flutter 3.50의 FlutterEngine 에는 Context getter가 없어 Activity를 함께 받는다.
         @JvmStatic
-        fun registerWith(engine: FlutterEngine) {
+        fun registerWith(context: Context, engine: FlutterEngine) {
             val messenger = engine.dartExecutor.binaryMessenger
-            MuudMediaPlugin(engine.applicationContext, messenger).attach(messenger)
+            MuudMediaPlugin(context, messenger).attach(messenger)
         }
     }
 
