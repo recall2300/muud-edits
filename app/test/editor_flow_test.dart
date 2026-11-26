@@ -240,8 +240,63 @@ void main() {
     expect(sourceTimeFor(trimmed, 0), 1000);
   });
 
-  testWidgets('코어가 없으면 안내와 다시 시도 버튼이 뜬다', (WidgetTester tester) async {
-    // 실제 FrbCoreBridge + 미로딩 상태 그대로(라이브러리 없는 환경과 같은 조건).
+  testWidgets('재생 중에는 컨트롤러를 매 프레임 건드리지 않고 재생 헤드만 갱신한다', (
+    WidgetTester tester,
+  ) async {
+    rustCore = const RustCoreLoadResult(loadedFrom: 'test');
+    final EditorController controller = EditorController(
+      bridge: FakeCoreBridge(),
+      media: FakeMediaPlatformBridge(),
+    );
+    addTearDown(controller.dispose);
+
+    int now = 0;
+    final PreviewEngine engine = PreviewEngine(
+      controller: controller,
+      mediaFactory: FakePreviewMediaFactory(clockMs: () => now),
+      clockMs: () => now,
+    );
+    addTearDown(engine.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildEditorTheme(),
+        home: EditorScreen(controller: controller, previewEngine: engine),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await controller.addMediaFile('/media/first.mp4');
+    await tester.pumpAndSettle();
+
+    expect(find.text('00:00:00.000'), findsOneWidget);
+
+    int notifications = 0;
+    void countNotices() => notifications++;
+    controller.addListener(countNotices);
+    addTearDown(() => controller.removeListener(countNotices));
+
+    await tester.tap(find.byTooltip('재생'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 40));
+    expect(find.byTooltip('일시정지'), findsOneWidget);
+
+    final int afterStart = notifications;
+    now += 600;
+    await tester.pump(const Duration(milliseconds: 40));
+    await tester.pump(const Duration(milliseconds: 40));
+
+    // 타임코드는 엔진이 이끄는 재생 헤드를 따라간다.
+    expect(find.text('00:00:00.600'), findsOneWidget);
+    // 재생 중에는 컨트롤러 알림(=화면 전체 리빌드)이 일어나지 않는다.
+    expect(notifications, afterStart);
+
+    await tester.tap(find.byTooltip('일시정지'));
+    await tester.pump();
+    // 일시정지하면 그 위치가 편집 기준으로 커밋된다.
+    expect(controller.playheadMs, 600);
+  });
+
+  testWidgets('코어가 없으면 안내와 다시 시도 버튼이 뜬다', (WidgetTester tester) async {    // 실제 FrbCoreBridge + 미로딩 상태 그대로(라이브러리 없는 환경과 같은 조건).
     rustCore = const RustCoreLoadResult(error: '코어 라이브러리를 찾지 못했습니다');
     final EditorController controller = EditorController(
       media: FakeMediaPlatformBridge(),

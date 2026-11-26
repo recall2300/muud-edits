@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "muud-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "flutter_rust_bridge",
  "serde",

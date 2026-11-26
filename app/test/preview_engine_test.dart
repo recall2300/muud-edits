@@ -181,14 +181,10 @@ void main() {
   });
 
   group('재생 엔진', () {
-    test('재생하면 플레이헤드가 흐르고 플레이어가 재생된다', () {
+    test('재생 중에는 플레이어 위치가 플레이헤드를 이끈다(이어 재생 시 시크 없음)', () {
       fakeAsync((FakeAsync async) {
         int now = 0;
-        late EditorController controller;
-        late PreviewEngine engine;
-        late FakePreviewMediaFactory factory;
-
-        controller = EditorController(
+        final EditorController controller = EditorController(
           bridge: FakeCoreBridge(),
           media: FakeMediaPlatformBridge(),
         );
@@ -203,11 +199,14 @@ void main() {
         );
         async.flushMicrotasks();
 
-        factory = FakePreviewMediaFactory();
-        engine = PreviewEngine(
+        final FakePreviewMediaFactory factory = FakePreviewMediaFactory(
+          clockMs: () => now,
+        );
+        final PreviewEngine engine = PreviewEngine(
           controller: controller,
           mediaFactory: factory,
           clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
         );
         addTearDown(engine.dispose);
         addTearDown(controller.dispose);
@@ -217,18 +216,28 @@ void main() {
         expect(engine.isPlaying, isTrue);
         expect(factory.opened, <String>['/a.mp4']);
 
-        now += 500;
-        async.elapse(const Duration(milliseconds: 20));
-        expect(controller.playheadMs, 500);
+        final FakePreviewMedia media = factory.media['/a.mp4']!;
+        // 시작 위치가 이미 맞으면 시크하지 않는다.
+        expect(media.seekCount, 0);
 
         now += 500;
         async.elapse(const Duration(milliseconds: 20));
-        expect(controller.playheadMs, 1000);
+        expect(engine.positionMs, 500);
+
+        now += 500;
+        async.elapse(const Duration(milliseconds: 20));
+        expect(engine.positionMs, 1000);
+        // 같은 클립을 이어 재생하는 동안에는 시크가 늘지 않는다(끊김 없음).
+        expect(media.seekCount, 0);
+        // 재생 중에는 컨트롤러를 매 프레임 건드리지 않는다(화면 전체 리빌드 방지).
+        expect(controller.playheadMs, 0);
 
         engine.pause();
         async.flushMicrotasks();
         expect(engine.isPlaying, isFalse);
-        expect(factory.media['/a.mp4']!.playing, isFalse);
+        expect(media.playing, isFalse);
+        // 일시정지하면 그 위치가 컨트롤러에 반영된다.
+        expect(controller.playheadMs, 1000);
       });
     });
 
@@ -260,11 +269,12 @@ void main() {
         addTearDown(controller.dispose);
 
         controller.setPlayhead(2400);
-        async.elapse(const Duration(milliseconds: 20));
+        async.elapse(const Duration(milliseconds: 40));
         async.flushMicrotasks();
 
         final FakePreviewMedia media = factory.media['/a.mp4']!;
-        expect(media.position, closeTo(2400, 120));
+        expect(media.positionMs, closeTo(2400, 120));
+        expect(engine.positionMs, 2400);
       });
     });
 
@@ -295,11 +305,14 @@ void main() {
         async.flushMicrotasks();
         expect(controller.durationMs, 2000);
 
-        final FakePreviewMediaFactory factory = FakePreviewMediaFactory();
+        final FakePreviewMediaFactory factory = FakePreviewMediaFactory(
+          clockMs: () => now,
+        );
         final PreviewEngine engine = PreviewEngine(
           controller: controller,
           mediaFactory: factory,
           clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
         );
         addTearDown(engine.dispose);
         addTearDown(controller.dispose);
@@ -315,6 +328,190 @@ void main() {
 
         expect(factory.opened, contains('/second.mp4'));
         expect(engine.selection.visualPath, '/second.mp4');
+      });
+    });
+
+    test('다음 클립은 경계 전에 미리 열어 두고, 경계에서 다시 열지 않는다', () {
+      fakeAsync((FakeAsync async) {
+        int now = 0;
+        final EditorController controller = EditorController(
+          bridge: FakeCoreBridge(),
+          media: FakeMediaPlatformBridge(),
+        );
+        controller.bootstrap();
+        async.flushMicrotasks();
+        controller.addMediaClip(
+          sourcePath: '/first.mp4',
+          kind: 'video',
+          startMs: 0,
+          endMs: 3000,
+          sourceDurationMs: 3000,
+        );
+        async.flushMicrotasks();
+        controller.addMediaClip(
+          sourcePath: '/second.mp4',
+          kind: 'video',
+          startMs: 0,
+          endMs: 3000,
+          sourceDurationMs: 3000,
+        );
+        async.flushMicrotasks();
+
+        final FakePreviewMediaFactory factory = FakePreviewMediaFactory(
+          clockMs: () => now,
+        );
+        final PreviewEngine engine = PreviewEngine(
+          controller: controller,
+          mediaFactory: factory,
+          clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
+        );
+        addTearDown(engine.dispose);
+        addTearDown(controller.dispose);
+
+        engine.play();
+        async.elapse(const Duration(milliseconds: 20));
+        async.flushMicrotasks();
+        expect(factory.opened, <String>['/first.mp4']);
+
+        // 클립 끝까지 1400ms 남은 시점 → 다음 클립을 미리 연다.
+        now += 1600;
+        async.elapse(const Duration(milliseconds: 20));
+        async.flushMicrotasks();
+        expect(factory.opened, <String>['/first.mp4', '/second.mp4']);
+
+        // 경계를 넘어도 새로 열기(=전환 지연)가 없다.
+        now += 1500;
+        async.elapse(const Duration(milliseconds: 20));
+        async.flushMicrotasks();
+        expect(
+          factory.opened.where((String path) => path == '/second.mp4').length,
+          1,
+        );
+        expect(engine.selection.visualPath, '/second.mp4');
+      });
+    });
+
+    test('짧은 클립으로 넘어가도 미리 연 컨트롤러를 버리지 않는다', () {
+      fakeAsync((FakeAsync async) {
+        int now = 0;
+        final EditorController controller = EditorController(
+          bridge: FakeCoreBridge(),
+          media: FakeMediaPlatformBridge(),
+        );
+        controller.bootstrap();
+        async.flushMicrotasks();
+        for (final (String path, int start, int end) in <(String, int, int)>[
+          ('/a.mp4', 0, 3000),
+          ('/b.mp4', 0, 1000),
+          ('/c.mp4', 0, 3000),
+        ]) {
+          controller.addMediaClip(
+            sourcePath: path,
+            kind: 'video',
+            startMs: start,
+            endMs: end,
+            sourceDurationMs: end - start,
+          );
+          async.flushMicrotasks();
+        }
+
+        final FakePreviewMediaFactory factory = FakePreviewMediaFactory(
+          clockMs: () => now,
+        );
+        final PreviewEngine engine = PreviewEngine(
+          controller: controller,
+          mediaFactory: factory,
+          clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
+        );
+        addTearDown(engine.dispose);
+        addTearDown(controller.dispose);
+
+        engine.play();
+        async.elapse(const Duration(milliseconds: 20));
+        async.flushMicrotasks();
+
+        now += 1600; // A 끝까지 1400ms → B 를 미리 연다
+        async.elapse(const Duration(milliseconds: 20));
+        async.flushMicrotasks();
+        expect(factory.opened, <String>['/a.mp4', '/b.mp4']);
+
+        now += 1500; // B(1초) 안으로 들어간다
+        async.elapse(const Duration(milliseconds: 20));
+        async.flushMicrotasks();
+        expect(engine.selection.visualPath, '/b.mp4');
+        // 미리 열어 둔 B 를 그대로 쓰고 버리지 않는다.
+        expect(factory.media['/b.mp4']!.disposed, isFalse);
+        expect(
+          factory.opened.where((String path) => path == '/b.mp4').length,
+          1,
+        );
+      });
+    });
+
+    test('같은 파일을 자른 두 클립은 클립이 바뀔 때만 시크한다', () {
+      fakeAsync((FakeAsync async) {
+        int now = 0;
+        final EditorController controller = EditorController(
+          bridge: FakeCoreBridge(),
+          media: FakeMediaPlatformBridge(),
+        );
+        controller.bootstrap();
+        async.flushMicrotasks();
+        // 첫 클립: 소스 0~1000ms · 둘째 클립: 소스 2000~3000ms(같은 파일의 다른 대목).
+        controller.addMediaClip(
+          sourcePath: '/a.mp4',
+          kind: 'video',
+          startMs: 0,
+          endMs: 1000,
+          sourceDurationMs: 1000,
+        );
+        async.flushMicrotasks();
+        controller.addMediaClip(
+          sourcePath: '/a.mp4',
+          kind: 'video',
+          startMs: 2000,
+          endMs: 3000,
+          sourceDurationMs: 1000,
+        );
+        async.flushMicrotasks();
+        expect(controller.durationMs, 2000);
+
+        final FakePreviewMediaFactory factory = FakePreviewMediaFactory(
+          clockMs: () => now,
+        );
+        final PreviewEngine engine = PreviewEngine(
+          controller: controller,
+          mediaFactory: factory,
+          clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
+        );
+        addTearDown(engine.dispose);
+        addTearDown(controller.dispose);
+
+        engine.play();
+        async.elapse(const Duration(milliseconds: 20));
+        async.flushMicrotasks();
+        final FakePreviewMedia media = factory.media['/a.mp4']!;
+        // 클립이 두 개여도 파일은 하나만 열린다.
+        expect(factory.opened, <String>['/a.mp4']);
+
+        // 첫 클립 안에서 이어 재생: 시크 없음.
+        now += 600;
+        async.elapse(const Duration(milliseconds: 20));
+        async.flushMicrotasks();
+        expect(engine.positionMs, 600);
+        expect(media.seekCount, 0);
+
+        // 두 번째 클립으로 넘어가면 인점(소스 2000ms)으로 한 번 시크한다.
+        now += 600;
+        async.elapse(const Duration(milliseconds: 20));
+        async.flushMicrotasks();
+        expect(engine.selection.visualClip?.id, isNotNull);
+        expect(engine.positionMs, 1200);
+        expect(media.seekCount, 1);
+        expect(media.positionMs, greaterThanOrEqualTo(2000));
       });
     });
 

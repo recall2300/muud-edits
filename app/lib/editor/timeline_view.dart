@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../bridge_api.dart';
@@ -17,10 +18,24 @@ const double _rightPad = 28;
 ///
 /// 직접 그리기(CustomPainter)를 쓰는 이유: 클립이 수백 개가 되어도 위젯 트리를
 /// 만들지 않아 스크롤/줌이 가볍다. 히트 테스트는 [TimelineMetrics]로 계산한다.
+///
+/// 재생 중 플레이헤드는 [playhead] 노티파이어만 따라 **선 하나만** 다시 그린다
+/// (클립·눈금은 [RepaintBoundary]로 분리해 다시 래스터화하지 않는다).
 class TimelineView extends StatelessWidget {
-  const TimelineView({super.key, required this.controller});
+  const TimelineView({
+    super.key,
+    required this.controller,
+    this.playhead,
+    this.onScrubStart,
+  });
 
   final EditorController controller;
+
+  /// 재생 헤드 시각(없으면 [EditorController.playheadMs]를 한 번만 읽는다).
+  final ValueListenable<int>? playhead;
+
+  /// 사용자가 타임라인을 만지기 시작했을 때(재생 중이면 멈추게).
+  final VoidCallback? onScrubStart;
 
   @override
   Widget build(BuildContext context) {
@@ -42,6 +57,8 @@ class TimelineView extends StatelessWidget {
           durationMs: state.durationMs,
           trackCount: state.tracks.length,
         );
+        final ValueListenable<int> source =
+            playhead ?? _StaticPlayhead(controller.playheadMs);
 
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
@@ -51,29 +68,58 @@ class TimelineView extends StatelessWidget {
               details.localPosition,
             );
             controller.selectClip(hit?.clip.id);
+            onScrubStart?.call();
             controller.setPlayhead(metrics.timeAt(details.localPosition.dx));
           },
           onHorizontalDragStart: (DragStartDetails details) {
+            onScrubStart?.call();
             controller.setPlayhead(metrics.timeAt(details.localPosition.dx));
           },
           onHorizontalDragUpdate: (DragUpdateDetails details) {
             controller.setPlayhead(metrics.timeAt(details.localPosition.dx));
           },
           child: ClipRect(
-            child: CustomPaint(
-              painter: _TimelinePainter(
-                state: state,
-                metrics: metrics,
-                playheadMs: controller.playheadMs,
-                selectedClipId: controller.selectedClipId,
-              ),
-              child: const SizedBox.expand(),
+            child: Stack(
+              fit: StackFit.expand,
+              children: <Widget>[
+                RepaintBoundary(
+                  child: CustomPaint(
+                    painter: _TimelinePainter(
+                      state: state,
+                      metrics: metrics,
+                      selectedClipId: controller.selectedClipId,
+                    ),
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+                CustomPaint(
+                  painter: _PlayheadPainter(
+                    metrics: metrics,
+                    position: source,
+                  ),
+                  child: const SizedBox.expand(),
+                ),
+              ],
             ),
           ),
         );
       },
     );
   }
+}
+
+/// 값이 변하지 않는 재생 헤드(엔진 없이 그릴 때).
+class _StaticPlayhead implements ValueListenable<int> {
+  const _StaticPlayhead(this.value);
+
+  @override
+  final int value;
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
 }
 
 /// 타임라인 좌표 계산(그리기와 히트 테스트가 같은 규칙을 쓰도록 한 곳에).
@@ -169,17 +215,16 @@ class TimelineMetrics {
   }
 }
 
+/// 클립·눈금·자막 — 플레이헤드와 무관한 정적인 층.
 class _TimelinePainter extends CustomPainter {
   _TimelinePainter({
     required this.state,
     required this.metrics,
-    required this.playheadMs,
     required this.selectedClipId,
   });
 
   final EditorState state;
   final TimelineMetrics metrics;
-  final int playheadMs;
   final String? selectedClipId;
 
   @override
@@ -191,7 +236,6 @@ class _TimelinePainter extends CustomPainter {
     _paintClips(canvas);
     _paintSubtitleLane(canvas);
     _paintRuler(canvas);
-    _paintPlayhead(canvas);
 
     if (state.summary.clipCount == 0) {
       _paintEmptyHint(canvas);
@@ -427,24 +471,6 @@ class _TimelinePainter extends CustomPainter {
     }
   }
 
-  void _paintPlayhead(Canvas canvas) {
-    final double x = metrics.xForTime(playheadMs);
-    if (x < _gutterWidth - 1 || x > metrics.width) {
-      return;
-    }
-    final Paint line = Paint()
-      ..color = EditorPalette.playhead
-      ..strokeWidth = 1.5;
-    canvas.drawLine(Offset(x, 0), Offset(x, metrics.height), line);
-
-    final Path knob = Path()
-      ..moveTo(x - 5, 0)
-      ..lineTo(x + 5, 0)
-      ..lineTo(x, 8)
-      ..close();
-    canvas.drawPath(knob, Paint()..color = EditorPalette.playhead);
-  }
-
   void _paintEmptyHint(Canvas canvas) {
     _drawText(
       canvas,
@@ -490,10 +516,46 @@ class _TimelinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _TimelinePainter oldDelegate) {
-    return oldDelegate.state != state ||
-        oldDelegate.playheadMs != playheadMs ||
+    return !identical(oldDelegate.state, state) ||
         oldDelegate.selectedClipId != selectedClipId ||
         oldDelegate.metrics.pxPerMs != metrics.pxPerMs ||
-        oldDelegate.metrics.width != metrics.width;
+        oldDelegate.metrics.width != metrics.width ||
+        oldDelegate.metrics.height != metrics.height;
+  }
+}
+
+/// 재생 헤드 선만 그리는 층. [position]이 바뀔 때 이 층만 다시 칠한다.
+class _PlayheadPainter extends CustomPainter {
+  _PlayheadPainter({required this.metrics, required this.position})
+    : super(repaint: position);
+
+  final TimelineMetrics metrics;
+  final ValueListenable<int> position;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double x = metrics.xForTime(position.value);
+    if (x < _gutterWidth - 1 || x > metrics.width) {
+      return;
+    }
+    final Paint line = Paint()
+      ..color = EditorPalette.playhead
+      ..strokeWidth = 1.5;
+    canvas.drawLine(Offset(x, 0), Offset(x, metrics.height), line);
+
+    final Path knob = Path()
+      ..moveTo(x - 5, 0)
+      ..lineTo(x + 5, 0)
+      ..lineTo(x, 8)
+      ..close();
+    canvas.drawPath(knob, Paint()..color = EditorPalette.playhead);
+  }
+
+  @override
+  bool shouldRepaint(covariant _PlayheadPainter oldDelegate) {
+    return oldDelegate.position != position ||
+        oldDelegate.metrics.pxPerMs != metrics.pxPerMs ||
+        oldDelegate.metrics.width != metrics.width ||
+        oldDelegate.metrics.height != metrics.height;
   }
 }

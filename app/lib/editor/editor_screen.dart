@@ -66,9 +66,14 @@ class _EditorScreenState extends State<EditorScreen> {
     _engine.togglePlay();
   }
 
+  /// 분할·자막·프레임 이동처럼 [EditorController]의 플레이헤드를 읽는 동작 전에
+  /// 재생을 멈추고 지금 위치를 옮겨 적는다.
+  void _pauseForEdit() => _engine.pause();
+
   // ------------------------------------------------------------------ actions
 
   Future<void> _saveProject() async {
+    _pauseForEdit();
     try {
       final directory = await getApplicationDocumentsDirectory();
       final String stamp = DateTime.now()
@@ -107,6 +112,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
   /// 저장한 프로젝트 파일(.muudproj)을 열어 편집을 이어 간다.
   Future<void> _openProject() async {
+    _pauseForEdit();
     PlatformFile? picked;
     try {
       picked = await FilePicker.pickFile(
@@ -147,6 +153,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
   /// 새 프로젝트. 저장하지 않은 편집이 있으면 먼저 확인한다.
   Future<void> _newProject() async {
+    _pauseForEdit();
     final bool dirty = _controller.state?.summary.dirty ?? false;
     if (dirty) {
       final bool? confirmed = await showDialog<bool>(
@@ -176,6 +183,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
   /// 파일 선택 → 프로브 → 클립 추가. 파일 선택기를 쓸 수 없으면 수동 입력。
   Future<void> _addMedia() async {
+    _pauseForEdit();
     PlatformFile? picked;
     try {
       // file_picker 13: FilePicker.pickFile()는 정적 메서드이고 PlatformFile?을 돌려준다.
@@ -300,6 +308,7 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _addText() async {
+    _pauseForEdit();
     final String? content = await _promptText(
       title: '텍스트 추가',
       hint: '화면에 표시할 문구',
@@ -310,6 +319,7 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _addSubtitle() async {
+    _pauseForEdit();
     final String? content = await _promptText(
       title: '자막 추가',
       hint: '재생 헤드에서 2초',
@@ -355,6 +365,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
   /// 자막을 목록에서 골라 문구/구간을 고치거나 지운다.
   Future<void> _openSubtitlesSheet() async {
+    _pauseForEdit();
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: EditorPalette.surface,
@@ -364,6 +375,7 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _openExportSheet() {
+    _pauseForEdit();
     unawaited(_controller.prepareExport());
     showModalBottomSheet<void>(
       context: context,
@@ -511,7 +523,11 @@ class _EditorScreenState extends State<EditorScreen> {
               _buildTransport(summary),
               SizedBox(
                 height: 206,
-                child: TimelineView(controller: _controller),
+                child: TimelineView(
+                  controller: _controller,
+                  playhead: _engine.position,
+                  onScrubStart: _engine.pause,
+                ),
               ),
               if (_controller.selected != null)
                 Container(
@@ -567,17 +583,28 @@ class _EditorScreenState extends State<EditorScreen> {
             icon: const Icon(Icons.skip_next, size: 20),
           ),
           const SizedBox(width: 4),
-          Text(
-            formatTimecode(_controller.playheadMs),
-            style: const TextStyle(
-              fontSize: 11,
-              fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
-            ),
+          // 재생 중에는 재생 헤드 값만 구독해 타임코드만 다시 그린다.
+          ValueListenableBuilder<int>(
+            valueListenable: _engine.position,
+            builder: (BuildContext context, int playheadMs, Widget? child) {
+              return Text(
+                formatTimecode(playheadMs),
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+                ),
+              );
+            },
           ),
           const Spacer(),
           IconButton(
             tooltip: '재생 헤드에서 분할',
-            onPressed: _controller.ready ? _controller.splitAtPlayhead : null,
+            onPressed: _controller.ready
+                ? () {
+                    _pauseForEdit();
+                    _controller.splitAtPlayhead();
+                  }
+                : null,
             icon: const Icon(Icons.content_cut, size: 20),
           ),
           IconButton(

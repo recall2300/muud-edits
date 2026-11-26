@@ -258,6 +258,10 @@ class VideoPlayerPreviewMedia implements PreviewMedia {
     if (durationMs > 0 && target >= durationMs) {
       target = durationMs - 1 < 0 ? 0 : durationMs - 1;
     }
+    // 이미 그 위치라면 다시 시크하지 않는다(플랫폼에 따라 재탐색이 일어난다).
+    if ((_controller.value.position.inMilliseconds - target).abs() < 8) {
+      return Future<void>.value();
+    }
     return _controller.seekTo(Duration(milliseconds: target));
   }
 
@@ -301,6 +305,80 @@ class PreviewMediaException implements Exception {
   String toString() => message;
 }
 
+/// 플레이어가 알려 주는 위치(약 100ms 간격)를 플레이헤드의 매끄러운 시계로 잇는다.
+///
+/// 플레이어 위치를 그대로 쓰면 30fps 미리보기가 10fps로 끊겨 보인다. 그래서
+/// **마지막으로 받은 위치 + 흐른 시간**으로 잇고, 새 위치가 오면 그 값에 다시
+/// 붙인다. 플레이어가 멈추면(버퍼링 등) 앞서 달리지 않도록
+/// [maxExtrapolationMs]까지만 앞선다.
+class MediaPositionClock {
+  MediaPositionClock({
+    this.maxExtrapolationMs = 160,
+    this.maxStepBackMs = 250,
+  });
+
+  /// 마지막으로 받은 위치보다 앞서 추정하는 최대치(ms).
+  final int maxExtrapolationMs;
+
+  /// 이보다 작게 뒤로 간 보고는 잔떨림으로 보고 무시한다.
+  final int maxStepBackMs;
+
+  int _anchorSource = 0;
+  int _anchorClock = 0;
+  int _lastRaw = -1;
+  int _lastValue = 0;
+  bool _primed = false;
+
+  /// 마지막 계산값(뒤로 가지 않게 하는 기준).
+  int get value => _lastValue;
+
+  void reset() {
+    _anchorSource = 0;
+    _anchorClock = 0;
+    _lastRaw = -1;
+    _lastValue = 0;
+    _primed = false;
+  }
+
+  /// 새 위치 보고를 반영하고, 지금 시각이어야 할 소스 위치를 돌려준다.
+  int advance(int rawSourceMs, int nowMs) {
+    final int raw = rawSourceMs < 0 ? 0 : rawSourceMs;
+    if (!_primed) {
+      _primed = true;
+      _lastRaw = raw;
+      _anchorSource = raw;
+      _anchorClock = nowMs;
+      _lastValue = raw;
+      return raw;
+    }
+    if (raw != _lastRaw) {
+      // 새 보고(또는 시크): 그 값에 기준을 다시 붙인다.
+      _lastRaw = raw;
+      _anchorSource = raw;
+      _anchorClock = nowMs;
+      int next = raw;
+      if (next < _lastValue && _lastValue - next < maxStepBackMs) {
+        next = _lastValue;
+      }
+      _lastValue = next;
+      return next;
+    }
+    // 같은 보고가 이어지면 흐른 시간만큼만 앞선다(정지하면 멈춘다).
+    int elapsed = nowMs - _anchorClock;
+    if (elapsed < 0) {
+      elapsed = 0;
+    }
+    if (elapsed > maxExtrapolationMs) {
+      elapsed = maxExtrapolationMs;
+    }
+    final int next = _anchorSource + elapsed;
+    if (next > _lastValue) {
+      _lastValue = next;
+    }
+    return _lastValue;
+  }
+}
+
 /// 타임라인 재생 엔진.
 ///
 /// ## 왜 필요한가
@@ -308,69 +386,114 @@ class PreviewMediaException implements Exception {
 /// 빈 구간·별도 오디오 트랙의 조합이므로, "지금 재생 헤드에 해당하는 클립"을
 /// 계산해 플레이어를 그 클립의 소스 시각으로 옮겨야 한다.
 ///
-/// ## 시간 규칙
-/// * 타임라인 시각은 **벽시계 1배**로 흐른다(클립 speed는 소스 시각에만 반영).
-/// * 재생 중 플레이어가 멈추거나 밀리면(`DRIFT_LIMIT_MS` 이상) 다시 시크한다.
-/// * 사용자가 스크럽하면(플레이헤드가 갑자기 바뀜) 즉시 해당 클립/프레임으로 이동한다.
+/// ## 시간 규칙 (끊김 없이 이어 재생하기)
+/// * **재생 중에는 플레이어가 시계다.** 영상/오디오를 실제로 재생하고 있으면
+///   플레이어가 알려 주는 위치를 타임라인 시각으로 되돌려 플레이헤드를 옮긴다
+///   ([MediaPositionClock]으로 100ms 보고 사이를 벽시계로 잇는다).
+/// * **빈 구간·이미지 클립에서만 벽시계**로 플레이헤드를 흘린다.
+/// * **같은 클립을 이어 재생하는 동안에는 시크하지 않는다.** 시크는 사용자가
+///   위치를 옮겼을 때(스크럽·탭·프레임 이동)와 클립이 바뀌었을 때만 한다.
+/// * 재생 중에는 [EditorController]의 플레이헤드를 매 프레임 바꾸지 않는다
+///   (화면 전체가 리빌드되면 프레임이 떨어진다). 위치는 [position] 노티파이어로
+///   알리고, 편집 동작이나 일시정지 시점에 컨트롤러로 커밋한다.
 class PreviewEngine extends ChangeNotifier {
   PreviewEngine({
     required EditorController controller,
     PreviewMediaFactory? mediaFactory,
     int Function()? clockMs,
-    this.tickInterval = const Duration(milliseconds: 20),
+    this.tickInterval = const Duration(milliseconds: 33),
   }) : _controller = controller,
        _factory = mediaFactory ?? const VideoPlayerMediaFactory(),
-       _clockMs =
-           clockMs ?? (() => DateTime.now().millisecondsSinceEpoch) {
+       _clockMs = clockMs ?? (() => DateTime.now().millisecondsSinceEpoch) {
+    _position.value = controller.playheadMs;
+    _lastState = controller.state;
     _controller.addListener(_onControllerChanged);
   }
 
-  /// 재생 중 플레이어와 타임라인의 허용 오차.
-  static const int driftLimitMs = 450;
+  /// 일시정지 상태에서 스크럽 위치와 플레이어 위치가 이만큼 벌어지면 시크한다.
+  static const int scrubSeekThresholdMs = 90;
 
-  /// 스크럽 시 "이미 그 위치"로 볼 허용 오차.
-  static const int seekThresholdMs = 90;
+  /// 새로 연 미디어의 첫 시크를 건너뛸 수 있는 오차(이미 그 위치면 재탐색이
+  /// 오히려 끊김을 만든다).
+  static const int freshSeekSlackMs = 40;
 
-  /// 재생 중 플레이어를 따라잡는 허용 오차(이보다 크게 벌어졌을 때만 시크).
-  static const int playingDriftLimitMs = 900;
+  /// 재생 중 같은 클립 안에서 허용하는 오차. 이보다 크게 벌어졌을 때만(예: 기기
+  /// 절전으로 플레이어가 오래 멈춘 경우) 플레이어를 다시 맞춘다.
+  static const int playingSlackMs = 1200;
+
+  /// 다음 클립을 미리 열기 시작하는 남은 시간(ms).
+  static const int preloadLeadMs = 1500;
 
   final EditorController _controller;
   final PreviewMediaFactory _factory;
   final int Function() _clockMs;
 
-  /// 플레이헤드 전진 주기(약 50fps).
+  /// 플레이헤드/플레이어 위치 확인 주기(약 30fps).
   final Duration tickInterval;
 
   PreviewMedia? _visual;
   PreviewMedia? _audio;
   String? _visualPath;
   String? _audioPath;
+  String? _visualClipId;
+  String? _audioClipId;
 
-  /// 새로 연 미디어는 첫 동기화에서 반드시 목표 위치로 시크한다.
+  /// 새로 연 미디어는 첫 동기화에서 목표 위치로 시크한다.
   bool _freshVisual = false;
   bool _freshAudio = false;
 
+  /// 이미 play()를 보냈는가(매 틱 플랫폼 호출을 하지 않기 위해).
+  bool _visualStarted = false;
+  bool _audioStarted = false;
+
+  /// 플레이어 위치 → 타임라인 시각을 잇는 시계.
+  final MediaPositionClock _visualClock = MediaPositionClock();
+  final MediaPositionClock _audioClock = MediaPositionClock();
+
   /// [_visual]이 준비 중일 때의 세대 번호(뒤늦게 도착한 열기를 버린다).
   int _openGeneration = 0;
+  bool _openingVisual = false;
+  bool _openingAudio = false;
 
+  /// 다음 클립을 미리 열어 둔 것(전환 지연 최소화).
+  Future<PreviewMedia?>? _preload;
+  String? _preloadPath;
+  String? _preloadFailedPath;
+
+  EditorState? _lastState;
   bool _playing = false;
-  bool _opening = false;
   bool _syncScheduled = false;
+  bool _syncForceSeek = false;
   bool _disposed = false;
-  int _anchorTimeline = 0;
-  int _anchorClock = 0;
+  bool _applyingPlayhead = false;
+  int _wallAnchorTimeline = 0;
+  int _wallAnchorClock = 0;
   Timer? _ticker;
   String? _error;
   int _pendingSeekMs = -1;
   bool _seekInFlight = false;
 
+  /// 열기에 실패한 경로(같은 경로를 매 프레임 다시 열지 않는다).
+  String? _failedVisualPath;
+  String? _failedAudioPath;
+
+  final ValueNotifier<int> _position = ValueNotifier<int>(0);
   final ValueNotifier<int> _repaint = ValueNotifier<int>(0);
 
   bool get isPlaying => _playing;
 
-  bool get isLoading => _opening;
+  bool get isLoading => _openingVisual;
 
   String? get error => _error;
+
+  /// 재생 중 매 프레임 바뀌는 재생 헤드(ms).
+  ///
+  /// 화면은 이 값만 [ValueListenableBuilder]로 구독해 타임코드·플레이헤드 선만
+  /// 다시 그린다.
+  ValueListenable<int> get position => _position;
+
+  /// 지금 재생 헤드 시각(ms).
+  int get positionMs => _position.value;
 
   /// 지금 화면에 그릴 클립(없으면 빈 구간).
   PreviewSelection get selection {
@@ -378,7 +501,7 @@ class PreviewEngine extends ChangeNotifier {
     if (state == null) {
       return const PreviewSelection();
     }
-    return resolvePreviewSelection(state, _controller.playheadMs);
+    return resolvePreviewSelection(state, _position.value);
   }
 
   /// 재생 표면이 갱신될 때마다 증가(위젯이 구독).
@@ -430,26 +553,155 @@ class PreviewEngine extends ChangeNotifier {
     if (total <= 0) {
       return;
     }
-    if (_controller.playheadMs >= total) {
-      _controller.setPlayhead(0);
+    if (_position.value >= total) {
+      _setPosition(0);
+      _commitToController(0);
     }
     _error = null;
+    // 이전에 열지 못한 파일도 다시 시도한다.
+    _failedVisualPath = null;
+    _failedAudioPath = null;
     _playing = true;
-    _anchorTimeline = _controller.playheadMs;
-    _anchorClock = _clockMs();
+    _wallAnchorTimeline = _position.value;
+    _wallAnchorClock = _clockMs();
     _ticker?.cancel();
     _ticker = Timer.periodic(tickInterval, (_) => _onTick());
-    unawaited(_sync(force: true));
+    unawaited(_sync());
     notifyListeners();
   }
 
   void pause() {
-    if (!_playing) {
+    if (_disposed) {
       return;
     }
+    final bool wasPlaying = _playing;
     _playing = false;
     _ticker?.cancel();
     _ticker = null;
+    _visualStarted = false;
+    _audioStarted = false;
+    _dropPreload();
+    // 여기서 한 번만 컨트롤러에 알린다(재생 중 매 프레임 알리지 않는다).
+    _commitToController(_position.value);
+    unawaited(_safeCall(() async {
+      await _visual?.pause();
+      await _audio?.pause();
+    }));
+    if (wasPlaying) {
+      notifyListeners();
+    }
+  }
+
+  /// 재생 중인 위치를 [EditorController]의 플레이헤드로 옮겨 적는다.
+  ///
+  /// 분할·자막 추가·프레임 이동처럼 컨트롤러의 플레이헤드를 읽는 동작 전에
+  /// 화면이 호출한다.
+  void commitPlayhead() {
+    if (_disposed) {
+      return;
+    }
+    _commitToController(_position.value);
+  }
+
+  void _commitToController(int ms) {
+    if (_disposed) {
+      return;
+    }
+    _applyingPlayhead = true;
+    try {
+      _controller.setPlayhead(ms);
+    } finally {
+      _applyingPlayhead = false;
+    }
+  }
+
+  void _setPosition(int ms) {
+    final int next = ms < 0 ? 0 : ms;
+    if (_position.value != next) {
+      _position.value = next;
+    }
+  }
+
+  // ------------------------------------------------------------------ 재생 루프
+
+  void _onTick() {
+    final EditorState? state = _controller.state;
+    if (!_playing || _disposed || state == null) {
+      return;
+    }
+    final int now = _clockMs();
+    final int total = _controller.durationMs;
+    final int current = _position.value;
+
+    final PreviewSelection currentSelection = resolvePreviewSelection(
+      state,
+      current,
+    );
+
+    // 1) 마스터 시계: 실제로 재생 중인 플레이어 위치(있으면 그것이 기준).
+    final int? player = _playerTimelineMs(currentSelection, now);
+    int next;
+    if (player != null) {
+      next = player;
+      _wallAnchorTimeline = next;
+      _wallAnchorClock = now;
+    } else {
+      final int elapsed = now - _wallAnchorClock;
+      next = _wallAnchorTimeline + (elapsed < 0 ? 0 : elapsed);
+    }
+    if (next < current) {
+      next = current; // 재생 중에는 뒤로 가지 않는다.
+    }
+    if (total > 0 && next >= total) {
+      _setPosition(total);
+      _finishPlayback();
+      return;
+    }
+    _setPosition(next);
+
+    // 2) 새 위치에 맞는 클립으로 플레이어를 맞춘다(같은 클립이면 시크 없음).
+    final PreviewSelection sel = next == current
+        ? currentSelection
+        : resolvePreviewSelection(state, next);
+    // 미리 열어 둔 컨트롤러가 먼저 소비되도록 동기화를 먼저 시작한다.
+    unawaited(_sync(sel: sel, atMs: next));
+    _maybePreload(state, sel, next);
+  }
+
+  /// 재생 중인 플레이어 위치를 타임라인 시각으로 돌려준다(없으면 null).
+  int? _playerTimelineMs(PreviewSelection sel, int now) {
+    final PreviewMedia? visual = _visual;
+    final ClipView? visualClip = sel.visualClip;
+    if (visual != null &&
+        visual.isReady &&
+        _visualStarted &&
+        visualClip != null &&
+        visualClip.kind == 'video' &&
+        _visualClipId == visualClip.id) {
+      final int source = _visualClock.advance(visual.positionMs, now);
+      return timelineTimeFor(visualClip, source);
+    }
+    final PreviewMedia? audio = _audio;
+    final ClipView? audioClip = sel.audioClip;
+    if (audio != null &&
+        audio.isReady &&
+        _audioStarted &&
+        audioClip != null &&
+        _audioClipId == audioClip.id) {
+      final int source = _audioClock.advance(audio.positionMs, now);
+      return timelineTimeFor(audioClip, source);
+    }
+    return null;
+  }
+
+  void _finishPlayback() {
+    _playing = false;
+    _ticker?.cancel();
+    _ticker = null;
+    _visualStarted = false;
+    _audioStarted = false;
+    _dropPreload();
+    _commitToController(_position.value);
     unawaited(_safeCall(() async {
       await _visual?.pause();
       await _audio?.pause();
@@ -457,60 +709,57 @@ class PreviewEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 사용자가 재생 헤드를 옮겼을 때(스크럽·탭·프레임 이동).
-  ///
-  /// 화면은 이미 [EditorController.setPlayhead]로 값을 바꿨으므로, 여기서는
-  /// 재생 중이면 기준 시각만 다시 잡는다. 실제 시크는 [_sync]가 한다.
-  void _reanchor() {
-    _anchorTimeline = _controller.playheadMs;
-    _anchorClock = _clockMs();
-  }
-
-  void _onTick() {
-    if (!_playing || _disposed) {
-      return;
-    }
-    final int elapsed = _clockMs() - _anchorClock;
-    final int total = _controller.durationMs;
-    int next = _anchorTimeline + (elapsed < 0 ? 0 : elapsed);
-    if (total > 0 && next >= total) {
-      next = total;
-      _controller.setPlayhead(next);
-      pause();
-      return;
-    }
-    _controller.setPlayhead(next);
-  }
-
   // ------------------------------------------------------------------ 동기화
 
   void _onControllerChanged() {
-    if (_disposed) {
+    if (_disposed || _applyingPlayhead) {
       return;
     }
-    // 재생 중 사용자가 헤드를 옮겼으면 벽시계 기준도 함께 옮긴다.
+    final EditorState? state = _controller.state;
+    final bool stateChanged = !identical(state, _lastState);
+    _lastState = state;
     if (_playing) {
-      final int elapsed = _clockMs() - _anchorClock;
-      final int expected = _anchorTimeline + (elapsed < 0 ? 0 : elapsed);
-      if ((expected - _controller.playheadMs).abs() > 120) {
-        _reanchor();
+      // 재생 중 플레이헤드는 플레이어가 정한다. 편집으로 상태가 바뀐 경우에만
+      // 클립 구성을 다시 맞춘다(시크는 하지 않는다).
+      if (stateChanged) {
+        _scheduleSync();
       }
+      return;
     }
-    // 50fps 틱마다 async 작업을 새로 만들지 않도록 마이크로태스크 하나로 합친다.
+    final int at = _controller.playheadMs;
+    if (at != _position.value) {
+      _position.value = at;
+    }
+    // 일시정지 상태의 위치 변경은 사용자의 스크럽이다 → 그 위치로 시크한다.
+    _scheduleSync(forceSeek: true);
+  }
+
+  void _scheduleSync({bool forceSeek = false}) {
+    _syncForceSeek = _syncForceSeek || forceSeek;
     if (_syncScheduled) {
       return;
     }
     _syncScheduled = true;
     scheduleMicrotask(() {
       _syncScheduled = false;
-      if (!_disposed) {
-        unawaited(_sync());
+      if (_disposed) {
+        return;
       }
+      final bool force = _syncForceSeek;
+      _syncForceSeek = false;
+      unawaited(_sync(forceSeek: force));
     });
   }
 
-  /// 현재 상태에 맞춰 플레이어를 맞춘다.
-  Future<void> _sync({bool force = false}) async {
+  /// 지금 상태에 맞춰 플레이어를 맞춘다.
+  ///
+  /// [forceSeek]는 사용자가 위치를 옮긴 직후에만 준다. 재생 중에는 이 값이
+  /// 없으면 클립이 바뀐 경우(새로 연 미디어)에만 시크한다.
+  Future<void> _sync({
+    PreviewSelection? sel,
+    int? atMs,
+    bool forceSeek = false,
+  }) async {
     if (_disposed) {
       return;
     }
@@ -518,53 +767,26 @@ class PreviewEngine extends ChangeNotifier {
     if (state == null) {
       return;
     }
-    final int atMs = _controller.playheadMs;
-    final PreviewSelection sel = resolvePreviewSelection(state, atMs);
+    final int at = atMs ?? _position.value;
+    final PreviewSelection selection = sel ?? resolvePreviewSelection(state, at);
 
-    await _reconcileVisual(sel);
-    await _reconcileAudio(sel);
+    if (forceSeek) {
+      _freshVisual = _visual != null;
+      _freshAudio = _audio != null;
+    }
 
-    if (_visual == null && _audio == null) {
+    await _reconcileVisual(selection);
+    await _reconcileAudio(selection);
+    if (_disposed || !identical(state, _controller.state)) {
       return;
     }
 
-    // 영상 위치 맞추기.
-    final PreviewMedia? visual = _visual;
-    final bool forceVisual = force || _freshVisual;
-    _freshVisual = false;
-    if (visual != null && visual.isReady && sel.visualClip != null) {
-      await _syncPosition(
-        media: visual,
-        clip: sel.visualClip!,
-        targetSourceMs: sel.sourceMs,
-        force: forceVisual,
-      );
-      await _safeCall(() => visual.setVolume(sel.volume));
-      await _safeCall(() => visual.setSpeed(sel.visualClip!.speed));
-      if (_playing) {
-        await _safeCall(() => visual.play());
-      }
-    }
-
-    // 별도 오디오 클립도 같은 타임라인 시각으로 맞춘다.
-    final PreviewMedia? audio = _audio;
-    final bool forceAudio = force || _freshAudio;
-    _freshAudio = false;
-    if (audio != null && audio.isReady && sel.audioClip != null) {
-      await _syncPosition(
-        media: audio,
-        clip: sel.audioClip!,
-        targetSourceMs: sourceTimeFor(sel.audioClip!, atMs),
-        force: forceAudio,
-      );
-      await _safeCall(() => audio.setVolume(sel.audioVolume));
-      await _safeCall(() => audio.setSpeed(sel.audioClip!.speed));
-      if (_playing) {
-        await _safeCall(() => audio.play());
-      }
-    }
+    await _syncVisual(state, selection, at);
+    await _syncAudio(selection, at);
 
     if (!_playing) {
+      final PreviewMedia? visual = _visual;
+      final PreviewMedia? audio = _audio;
       await _safeCall(() async {
         await visual?.pause();
         await audio?.pause();
@@ -572,14 +794,64 @@ class PreviewEngine extends ChangeNotifier {
     }
   }
 
+  Future<void> _syncVisual(
+    EditorState state,
+    PreviewSelection selection,
+    int atMs,
+  ) async {
+    final PreviewMedia? visual = _visual;
+    final ClipView? clip = selection.visualClip;
+    if (visual == null || !visual.isReady || clip == null) {
+      return;
+    }
+    if (_visualClipId != clip.id) {
+      return; // 아직 새 클립으로 바뀌는 중
+    }
+    await _applyPosition(visual, sourceTimeFor(clip, atMs), fresh: _freshVisual);
+    _freshVisual = false;
+    await _safeCall(() => visual.setVolume(selection.volume));
+    await _safeCall(() => visual.setSpeed(clip.speed));
+    if (_playing) {
+      if (!_visualStarted) {
+        _visualStarted = true;
+        await _safeCall(visual.play);
+      }
+    } else if (_visualStarted) {
+      _visualStarted = false;
+      await _safeCall(visual.pause);
+    }
+  }
+
+  Future<void> _syncAudio(PreviewSelection selection, int atMs) async {
+    final PreviewMedia? audio = _audio;
+    final ClipView? clip = selection.audioClip;
+    if (audio == null || !audio.isReady || clip == null) {
+      return;
+    }
+    if (_audioClipId != clip.id) {
+      return;
+    }
+    await _applyPosition(audio, sourceTimeFor(clip, atMs), fresh: _freshAudio);
+    _freshAudio = false;
+    await _safeCall(() => audio.setVolume(selection.audioVolume));
+    await _safeCall(() => audio.setSpeed(clip.speed));
+    if (_playing) {
+      if (!_audioStarted) {
+        _audioStarted = true;
+        await _safeCall(audio.play);
+      }
+    } else if (_audioStarted) {
+      _audioStarted = false;
+      await _safeCall(audio.pause);
+    }
+  }
+
   /// 대상 클립이 바뀌었으면 플레이어를 새로 연다.
   Future<void> _reconcileVisual(PreviewSelection sel) async {
     final ClipView? clip = sel.visualClip;
     final String? rawPath = sel.visualPath;
-    final String? path = (clip != null &&
-            clip.kind == 'video' &&
-            rawPath != null &&
-            rawPath.isNotEmpty)
+    final String? path =
+        (clip != null && clip.kind == 'video' && rawPath != null && rawPath.isNotEmpty)
         ? rawPath
         : null;
 
@@ -588,33 +860,71 @@ class PreviewEngine extends ChangeNotifier {
       if (_visual != null) {
         await _closeVisual();
       }
+      _failedVisualPath = null;
       return;
+    }
+    if (_failedVisualPath != null && _failedVisualPath != path) {
+      _failedVisualPath = null;
     }
     if (_visual != null && _visualPath == path) {
+      if (clip!.id != _visualClipId) {
+        // 같은 파일을 자른 다른 클립: 인점으로 다시 시크한다(허용되는 시크).
+        _visualClipId = clip.id;
+        _freshVisual = true;
+        _visualStarted = false;
+        _visualClock.reset();
+      }
       return;
     }
+    if (_openingVisual) {
+      return; // 이미 여는 중(한 번에 하나만 연다)
+    }
+    if (_failedVisualPath == path) {
+      return; // 이미 실패한 파일 — 같은 경로를 다시 시도하지 않는다
+    }
+    await _openVisual(path, clip!.id);
+  }
+
+  Future<void> _openVisual(String path, String clipId) async {
+    // 미리 열어 둔 컨트롤러가 있으면 그대로 쓴다(전환 지연 최소화).
+    Future<PreviewMedia?>? pending;
+    if (_preloadPath == path) {
+      pending = _preload;
+      _preload = null;
+      _preloadPath = null;
+    }
     await _closeVisual();
-    final int generation = ++_openGeneration;
-    _opening = true;
+    final int generation = _openGeneration;
+    _openingVisual = true;
     notifyListeners();
     try {
-      final PreviewMedia media = await _factory.open(path, wantVideo: true);
+      PreviewMedia? media;
+      if (pending != null) {
+        media = await pending;
+      }
+      media ??= await _factory.open(path, wantVideo: true);
       if (_disposed || generation != _openGeneration) {
-        await media.dispose();
+        await _safeCall(media.dispose);
         return;
       }
       _visual = media;
       _visualPath = path;
+      _visualClipId = clipId;
       _freshVisual = true;
+      _visualStarted = false;
+      _visualClock.reset();
       _error = null;
       _repaint.value++;
     } on Object catch (error) {
       if (generation == _openGeneration) {
         _error = _describe(error);
+        _failedVisualPath = path;
+        _visualPath = null;
+        _visual = null;
       }
     } finally {
       if (generation == _openGeneration) {
-        _opening = false;
+        _openingVisual = false;
         notifyListeners();
       }
     }
@@ -627,63 +937,161 @@ class PreviewEngine extends ChangeNotifier {
       if (_audio != null) {
         await _closeAudio();
       }
+      _failedAudioPath = null;
       return;
     }
+    if (_failedAudioPath != null && _failedAudioPath != path) {
+      _failedAudioPath = null;
+    }
     if (_audio != null && _audioPath == path) {
+      if (clip.id != _audioClipId) {
+        _audioClipId = clip.id;
+        _freshAudio = true;
+        _audioStarted = false;
+        _audioClock.reset();
+      }
+      return;
+    }
+    if (_openingAudio) {
+      return; // 이미 여는 중(한 번에 하나만 연다)
+    }
+    if (_failedAudioPath == path) {
       return;
     }
     await _closeAudio();
+    _openingAudio = true;
     try {
       final PreviewMedia media = await _factory.open(path, wantVideo: false);
       if (_disposed) {
-        await media.dispose();
+        await _safeCall(media.dispose);
         return;
       }
       _audio = media;
       _audioPath = path;
+      _audioClipId = clip.id;
       _freshAudio = true;
+      _audioStarted = false;
+      _audioClock.reset();
       _repaint.value++;
     } on Object catch (error) {
       _error ??= _describe(error);
+      _failedAudioPath = path;
+      _audioPath = null;
+    } finally {
+      _openingAudio = false;
     }
   }
 
-  /// 플레이어 위치를 목표 소스 시각에 맞춘다(드리프트/스크럽).
-  ///
-  /// 재생 중에는 플레이어가 자기 속도로 재생되고 있으므로 **작은 오차로 시크하지
-  /// 않는다**(잦은 시크는 재생을 끊긴다). 크게 벌어졌을 때만 플레이어를 따라잡힌다.
-  Future<void> _syncPosition({
-    required PreviewMedia media,
-    required ClipView clip,
-    required int targetSourceMs,
-    required bool force,
-  }) async {
-    if (_seekInFlight) {
-      _pendingSeekMs = targetSourceMs;
+  /// 다음 클립을 미리 열어 두어, 경계에서 "여는 시간"만큼 멈추지 않게 한다.
+  void _maybePreload(EditorState state, PreviewSelection sel, int atMs) {
+    if (!_playing) {
+      _dropPreload();
       return;
     }
+    final ClipView? clip = sel.visualClip;
+    if (clip == null || clip.kind != 'video') {
+      _dropPreload();
+      return;
+    }
+    if (clip.endOffsetMs - atMs > preloadLeadMs) {
+      return; // 아직 여유가 있다.
+    }
+    final ClipView? next = _nextVisualClipInTrack(state, clip);
+    if (next == null || next.kind != 'video' || next.sourcePath.trim().isEmpty) {
+      _dropPreload();
+      return;
+    }
+    if (next.sourcePath == clip.sourcePath) {
+      // 같은 파일이면 지금 컨트롤러를 그대로 이어 쓰면 된다(새로 열 필요 없음).
+      _dropPreload();
+      return;
+    }
+    if (_preloadPath == next.sourcePath || _preloadFailedPath == next.sourcePath) {
+      return;
+    }
+    _dropPreload();
+    _preloadPath = next.sourcePath;
+    _preload = _factory
+        .open(next.sourcePath, wantVideo: true)
+        .then<PreviewMedia?>((PreviewMedia media) => media)
+        .catchError((Object _) {
+          _preloadFailedPath = next.sourcePath;
+          if (_preloadPath == next.sourcePath) {
+            _preloadPath = null;
+            _preload = null;
+          }
+          return null;
+        });
+  }
+
+  ClipView? _nextVisualClipInTrack(EditorState state, ClipView current) {
+    for (final TrackView track in state.tracks) {
+      if (track.kind == 'audio' || track.hidden) {
+        continue;
+      }
+      final int index = track.clips.indexWhere((ClipView c) => c.id == current.id);
+      if (index < 0) {
+        continue;
+      }
+      if (index + 1 < track.clips.length) {
+        return track.clips[index + 1];
+      }
+      return null;
+    }
+    return null;
+  }
+
+  /// 미리 열어 둔 클립을 버린다(쓰지 않으면 자원을 돌려준다).
+  void _dropPreload() {
+    final Future<PreviewMedia?>? pending = _preload;
+    _preload = null;
+    _preloadPath = null;
+    if (pending == null) {
+      return;
+    }
+    unawaited(
+      pending
+          .then<void>((PreviewMedia? media) async {
+            if (media != null) {
+              await _safeCall(media.dispose);
+            }
+          })
+          .catchError((Object _) {}),
+    );
+  }
+
+  /// 플레이어 위치를 목표 소스 시각에 맞춘다.
+  ///
+  /// 재생 중 같은 클립 안에서는 **시크하지 않는다**(시크는 키프레임 재탐색으로
+  /// 재생이 끊긴다). [fresh]일 때(새로 열었거나 다른 클립으로 넘어왔을 때)와
+  /// 일시정지 상태에서 큰 오차가 있을 때만 시크한다.
+  Future<void> _applyPosition(
+    PreviewMedia media,
+    int targetMs, {
+    required bool fresh,
+  }) async {
     final int current = media.positionMs;
-    final int limit = _playing ? playingDriftLimitMs : seekThresholdMs;
-    final bool needSeek = force || (current - targetSourceMs).abs() > limit;
-    if (!needSeek) {
+    final int limit = fresh
+        ? freshSeekSlackMs
+        : (_playing ? playingSlackMs : scrubSeekThresholdMs);
+    if ((current - targetMs).abs() <= limit) {
+      return;
+    }
+    if (_seekInFlight) {
+      _pendingSeekMs = targetMs;
       return;
     }
     _seekInFlight = true;
     try {
-      await media.seekTo(targetSourceMs);
+      await media.seekTo(targetMs);
     } on Object catch (error) {
       _error ??= _describe(error);
     } finally {
       _seekInFlight = false;
       final int pending = _pendingSeekMs;
       _pendingSeekMs = -1;
-      if (pending >= 0 && (pending - targetSourceMs).abs() > seekThresholdMs) {
-        await _syncPosition(
-          media: media,
-          clip: clip,
-          targetSourceMs: pending,
-          force: true,
-        );
+      if (pending >= 0 && (pending - targetMs).abs() > scrubSeekThresholdMs) {
+        await _applyPosition(media, pending, fresh: true);
       }
     }
   }
@@ -692,7 +1100,11 @@ class PreviewEngine extends ChangeNotifier {
     final PreviewMedia? media = _visual;
     _visual = null;
     _visualPath = null;
+    _visualClipId = null;
+    _visualStarted = false;
+    _freshVisual = false;
     _openGeneration++;
+    _visualClock.reset();
     _repaint.value++;
     if (media != null) {
       await _safeCall(media.dispose);
@@ -703,6 +1115,10 @@ class PreviewEngine extends ChangeNotifier {
     final PreviewMedia? media = _audio;
     _audio = null;
     _audioPath = null;
+    _audioClipId = null;
+    _audioStarted = false;
+    _freshAudio = false;
+    _audioClock.reset();
     _repaint.value++;
     if (media != null) {
       await _safeCall(media.dispose);
@@ -734,6 +1150,7 @@ class PreviewEngine extends ChangeNotifier {
     _ticker?.cancel();
     _ticker = null;
     _controller.removeListener(_onControllerChanged);
+    _dropPreload();
     final PreviewMedia? visual = _visual;
     final PreviewMedia? audio = _audio;
     _visual = null;
@@ -741,33 +1158,51 @@ class PreviewEngine extends ChangeNotifier {
     unawaited(visual?.dispose() ?? Future<void>.value());
     unawaited(audio?.dispose() ?? Future<void>.value());
     _repaint.dispose();
+    _position.dispose();
     super.dispose();
   }
 }
 
 /// 테스트용 가짜 미디어. 열린 경로/시크/재생 호출을 기록한다.
+///
+/// [clockMs]를 주면 실제 플레이어처럼 재생 중 위치가 흐른다(재생 시계 검증용).
 class FakePreviewMedia implements PreviewMedia {
-  FakePreviewMedia(this.path, {this.video = true, this.aspect = 9 / 16});
+  FakePreviewMedia(
+    this.path, {
+    this.video = true,
+    this.aspect = 9 / 16,
+    this.clockMs,
+  });
 
   @override
   final String path;
 
   final bool video;
   final double aspect;
+  final int Function()? clockMs;
 
   bool ready = true;
   bool playing = false;
-  int position = 0;
   int seekCount = 0;
   double volume = 1;
   double speed = 1;
   bool disposed = false;
 
+  int _base = 0;
+  int _playedFrom = 0;
+
   @override
   bool get isReady => ready;
 
   @override
-  int get positionMs => position;
+  int get positionMs {
+    if (!playing) {
+      return _base;
+    }
+    final int now = clockMs?.call() ?? _playedFrom;
+    final int advanced = _base + (now - _playedFrom);
+    return advanced < _base ? _base : advanced;
+  }
 
   @override
   double get aspectRatio => aspect;
@@ -777,17 +1212,25 @@ class FakePreviewMedia implements PreviewMedia {
 
   @override
   Future<void> play() async {
+    if (playing) {
+      return;
+    }
+    _playedFrom = clockMs?.call() ?? 0;
     playing = true;
   }
 
   @override
   Future<void> pause() async {
+    if (playing) {
+      _base = positionMs;
+    }
     playing = false;
   }
 
   @override
   Future<void> seekTo(int sourceMs) async {
-    position = sourceMs;
+    _base = sourceMs < 0 ? 0 : sourceMs;
+    _playedFrom = clockMs?.call() ?? 0;
     seekCount++;
   }
 
@@ -812,9 +1255,10 @@ class FakePreviewMedia implements PreviewMedia {
 
 /// 테스트용 팩토리. 경로별 가짜 미디어를 돌려주고 열린 순서를 기록한다.
 class FakePreviewMediaFactory implements PreviewMediaFactory {
-  FakePreviewMediaFactory({this.fail = false});
+  FakePreviewMediaFactory({this.fail = false, this.clockMs});
 
   final bool fail;
+  final int Function()? clockMs;
   final List<String> opened = <String>[];
   final Map<String, FakePreviewMedia> media = <String, FakePreviewMedia>{};
 
@@ -824,7 +1268,11 @@ class FakePreviewMediaFactory implements PreviewMediaFactory {
     if (fail) {
       throw const PreviewMediaException('테스트: 재생할 수 없음');
     }
-    final FakePreviewMedia item = FakePreviewMedia(path, video: wantVideo);
+    final FakePreviewMedia item = FakePreviewMedia(
+      path,
+      video: wantVideo,
+      clockMs: clockMs,
+    );
     media[path] = item;
     return item;
   }

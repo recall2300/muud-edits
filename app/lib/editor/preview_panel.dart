@@ -11,13 +11,18 @@ import 'preview_engine.dart';
 ///
 /// 실제 재생은 [PreviewEngine]이 맡는다(영상 프레임 + 소리). 이 위젯은
 /// 재생 표면 위에 **텍스트 오버레이·자막·배지**를 재생 헤드 시각에 맞춰 그린다.
+///
+/// 재생 중에는 [PreviewEngine.position]만 구독해 오버레이와 타임코드만 다시
+/// 그린다(영상 표면은 [PreviewEngine.repaint] 때만 바뀐다).
 class PreviewPanel extends StatelessWidget {
-  const PreviewPanel({super.key, required this.controller, this.engine});
+  const PreviewPanel({
+    super.key,
+    required this.controller,
+    required this.engine,
+  });
 
   final EditorController controller;
-
-  /// 재생 엔진. 없으면 화면(EditorScreen)이 만든 것을 쓴다.
-  final PreviewEngine? engine;
+  final PreviewEngine engine;
 
   @override
   Widget build(BuildContext context) {
@@ -30,11 +35,6 @@ class PreviewPanel extends StatelessWidget {
         ),
       );
     }
-    final PreviewEngine? player = engine;
-
-    final int playhead = controller.playheadMs;
-    final List<ClipView> textClips = state.textClipsAt(playhead);
-    final String? subtitle = state.subtitleAt(playhead);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
@@ -52,58 +52,11 @@ class PreviewPanel extends StatelessWidget {
               child: Stack(
                 fit: StackFit.expand,
                 children: <Widget>[
-                  if (player == null)
-                    const _NoPlayerSlot()
-                  else
-                    _PreviewSurface(engine: player, state: state),
-                  for (int index = 0; index < textClips.length; index++)
-                    Align(
-                      alignment: Alignment(0, 0.55 - index * 0.14),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: Text(
-                          textClips[index].label,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                            shadows: const <Shadow>[
-                              Shadow(color: Colors.black, blurRadius: 6),
-                            ],
-                            height: 1.25,
-                          ),
-                        ),
-                      ),
-                    ),
-                  if (subtitle != null)
-                    Align(
-                      alignment: const Alignment(0, 0.86),
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(horizontal: 14),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.55),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          subtitle,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ),
-                  Positioned(
-                    left: 10,
-                    top: 8,
-                    child: _Badge(text: formatTimecode(playhead)),
+                  _PreviewSurface(engine: engine, state: state),
+                  ValueListenableBuilder<int>(
+                    valueListenable: engine.position,
+                    builder: (BuildContext context, int playhead, Widget? _) =>
+                        _OverlayLayer(state: state, playheadMs: playhead),
                   ),
                   Positioned(
                     right: 10,
@@ -112,7 +65,7 @@ class PreviewPanel extends StatelessWidget {
                       text: '${state.width}x${state.height} · ${state.fps}fps',
                     ),
                   ),
-                  if (player != null && player.error != null)
+                  if (engine.error != null)
                     Positioned(
                       left: 10,
                       right: 10,
@@ -120,7 +73,7 @@ class PreviewPanel extends StatelessWidget {
                       child: _Notice(
                         icon: Icons.error_outline,
                         color: EditorPalette.playhead,
-                        text: player.error!,
+                        text: engine.error!,
                       ),
                     ),
                 ],
@@ -129,6 +82,69 @@ class PreviewPanel extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 재생 헤드 시각에 맞춰 그리는 텍스트·자막·배지.
+///
+/// 재생 중 매 프레임 다시 그려지는 부분을 여기로 모아 둔다.
+class _OverlayLayer extends StatelessWidget {
+  const _OverlayLayer({required this.state, required this.playheadMs});
+
+  final EditorState state;
+  final int playheadMs;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<ClipView> textClips = state.textClipsAt(playheadMs);
+    final String? subtitle = state.subtitleAt(playheadMs);
+    if (textClips.isEmpty && subtitle == null) {
+      return const SizedBox.shrink();
+    }
+    return Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        for (int index = 0; index < textClips.length; index++)
+          Align(
+            alignment: Alignment(0, 0.55 - index * 0.14),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                textClips[index].label,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  shadows: <Shadow>[Shadow(color: Colors.black, blurRadius: 6)],
+                  height: 1.25,
+                ),
+              ),
+            ),
+          ),
+        if (subtitle != null)
+          Align(
+            alignment: const Alignment(0, 0.86),
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 14),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.55),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                subtitle,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -192,19 +208,6 @@ class _PreviewSurface extends StatelessWidget {
           child: content,
         );
       },
-    );
-  }
-}
-
-/// 재생 엔진이 없을 때(설정 오류)의 안내.
-class _NoPlayerSlot extends StatelessWidget {
-  const _NoPlayerSlot();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _GapSlot(
-      icon: Icons.movie_creation_outlined,
-      title: '프리뷰를 준비하는 중…',
     );
   }
 }
