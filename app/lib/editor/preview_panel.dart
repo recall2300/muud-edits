@@ -170,11 +170,16 @@ class _PreviewSurface extends StatelessWidget {
           final double ratio = engine.surfaceAspectRatio > 0
               ? engine.surfaceAspectRatio
               : state.aspectRatio;
-          content = FittedBox(
-            fit: BoxFit.contain,
-            child: SizedBox(
-              width: 1000,
-              height: 1000 / ratio,
+          // 영상 텍스처는 **표시 크기에 바로** 맞춰 그린다.
+          //
+          // 이전에는 FittedBox + 고정 크기(1000px) 자식으로 텍스처를 매 프레임
+          // 축소 변환해 그렸다. Android 에서는 이 변환·리샘플 단계에 텍스처 레이어가
+          // 한 번 더 복사되는 경로가 생기고(특히 Impeller), 1000px 레이아웃을
+          // 매번 다시 계산하게 된다. AspectRatio 로 맞추면 텍스처가 자기 비율
+          // 그대로 한 번에 합성된다.
+          content = Center(
+            child: AspectRatio(
+              aspectRatio: ratio,
               child: surface,
             ),
           );
@@ -202,11 +207,18 @@ class _PreviewSurface extends StatelessWidget {
         }
 
         // 영상 클립 불투명도 반영(텍스트/자막은 위에서 별도로 그린다).
-        final double opacity = selection.visualClip?.opacity ?? 1;
-        return Opacity(
-          opacity: opacity.clamp(0.0, 1.0),
-          child: content,
+        //
+        // 불투명(1.0)일 때 Opacity 로 감싸면 저장 레이어(saveLayer)가 하나
+        // 생길 수 있는 경로를 만든다(영상 텍스처를 오프스크린에 한 번 더 그린다).
+        // 실제로 투명도가 줄었을 때만 감싼다.
+        final double opacity = (selection.visualClip?.opacity ?? 1).clamp(
+          0.0,
+          1.0,
         );
+        if (opacity >= 0.999) {
+          return content;
+        }
+        return Opacity(opacity: opacity, child: content);
       },
     );
   }

@@ -89,6 +89,32 @@ TrackView _track(
 }
 
 void main() {
+  group('재생 시계(MediaPositionClock)', () {
+    test('보고 간격이 길어져도 멈췄다가 점프하지 않는다', () {
+      final MediaPositionClock clock = MediaPositionClock();
+      expect(clock.advance(0, 0), 0);
+      // 플랫폼 채널이 밀려 보고가 300ms 간격으로 도착하는 경우.
+      expect(clock.advance(300, 300), 300);
+      // 다음 보고 전까지 260ms 흘렀다: 기본 상한(160ms)에서 멈추면 안 된다.
+      expect(clock.advance(300, 560), 560);
+    });
+
+    test('보고가 끊기면 기본 한도까지만 앞선다', () {
+      final MediaPositionClock clock = MediaPositionClock();
+      expect(clock.advance(0, 0), 0);
+      // 간격 정보가 없으면 기본 상한(160ms)에서 멈춘다(플레이어가 정지한 경우).
+      expect(clock.advance(0, 5000), 160);
+    });
+
+    test('보고 간격을 안 뒤에는 그 두 배까지만 허용하고 절대 한도를 넘지 않는다', () {
+      final MediaPositionClock clock = MediaPositionClock();
+      expect(clock.advance(0, 0), 0);
+      expect(clock.advance(300, 300), 300);
+      // 300ms 간격의 두 배(600)가 아니라 maxReportGapMs(400)에서 멈춘다.
+      expect(clock.advance(300, 5000), 300 + 400);
+    });
+  });
+
   group('소스 시각 매핑', () {
     test('트림과 배속을 반영한다', () {
       final ClipView clip = _clip(
@@ -548,6 +574,162 @@ void main() {
     });
   });
 
+  group('단일 영상 이어 재생(끊김 회귀)', () {
+    test('이어 재생 중에는 틱마다 플랫폼 호출이 없다', () {
+      fakeAsync((FakeAsync async) {
+        int now = 0;
+        final EditorController controller = EditorController(
+          bridge: FakeCoreBridge(),
+          media: FakeMediaPlatformBridge(),
+        );
+        controller.bootstrap();
+        async.flushMicrotasks();
+        controller.addMediaClip(
+          sourcePath: '/a.mp4',
+          kind: 'video',
+          startMs: 0,
+          endMs: 4000,
+          sourceDurationMs: 4000,
+        );
+        async.flushMicrotasks();
+
+        final FakePreviewMediaFactory factory = FakePreviewMediaFactory(
+          clockMs: () => now,
+        );
+        final PreviewEngine engine = PreviewEngine(
+          controller: controller,
+          mediaFactory: factory,
+          clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
+        );
+        addTearDown(engine.dispose);
+        addTearDown(controller.dispose);
+
+        engine.play();
+        async.flushMicrotasks();
+        final FakePreviewMedia media = factory.media['/a.mp4']!;
+        expect(media.playCount, 1);
+        expect(media.seekCount, 0);
+        final int volumeCallsAtStart = media.volumeCalls;
+        final int speedCallsAtStart = media.speedCalls;
+        final int readsAtStart = media.positionReads;
+
+        // 10틱(200ms)을 그냥 흘려보낸다 — 플레이어를 건드리는 일이 없어야 한다.
+        for (int i = 0; i < 10; i++) {
+          now += 20;
+          async.elapse(const Duration(milliseconds: 20));
+        }
+
+        expect(engine.positionMs, 200);
+        expect(media.seekCount, 0, reason: '이어 재생 중 시크 금지');
+        expect(media.playCount, 1, reason: '재생 시작은 한 번만');
+        expect(media.pauseCount, 0);
+        expect(media.volumeCalls, volumeCallsAtStart, reason: '볼륨은 바뀔 때만');
+        expect(media.speedCalls, speedCallsAtStart, reason: '속도는 바뀔 때만');
+        // 플레이헤드는 캐시된 위치만 읽는다(플랫폼 채널 왕복 없음).
+        expect(media.positionReads, greaterThan(readsAtStart));
+        // 재생 중 컨트롤러(화면 전체 리빌드)도 건드리지 않는다.
+        expect(controller.playheadMs, 0);
+      });
+    });
+
+    test('열기가 끝나기 전에 재생/일시정지를 반복해도 플레이어는 한 번만 열린다', () {
+      fakeAsync((FakeAsync async) {
+        int now = 0;
+        final EditorController controller = EditorController(
+          bridge: FakeCoreBridge(),
+          media: FakeMediaPlatformBridge(),
+        );
+        controller.bootstrap();
+        async.flushMicrotasks();
+        controller.addMediaClip(
+          sourcePath: '/a.mp4',
+          kind: 'video',
+          startMs: 0,
+          endMs: 4000,
+          sourceDurationMs: 4000,
+        );
+        async.flushMicrotasks();
+
+        final FakePreviewMediaFactory factory = FakePreviewMediaFactory(
+          clockMs: () => now,
+        );
+        final PreviewEngine engine = PreviewEngine(
+          controller: controller,
+          mediaFactory: factory,
+          clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
+        );
+        addTearDown(engine.dispose);
+        addTearDown(controller.dispose);
+
+        // 열기·정렬이 끝나기 전에 상태가 여러 번 바뀐다.
+        engine.play();
+        engine.pause();
+        engine.play();
+        async.flushMicrotasks();
+
+        final FakePreviewMedia media = factory.media['/a.mp4']!;
+        expect(factory.opened, <String>['/a.mp4'], reason: '열기는 한 번');
+        expect(media.seekCount, 0);
+        // 마지막 상태(재생 중)로 정리된다.
+        expect(engine.isPlaying, isTrue);
+        expect(media.playing, isTrue);
+
+        engine.pause();
+        async.flushMicrotasks();
+        expect(media.playing, isFalse);
+      });
+    });
+
+    test('스크럽이 연달아 들어오면 마지막 위치로 한 번만 맞춘다', () {
+      fakeAsync((FakeAsync async) {
+        int now = 0;
+        final EditorController controller = EditorController(
+          bridge: FakeCoreBridge(),
+          media: FakeMediaPlatformBridge(),
+        );
+        controller.bootstrap();
+        async.flushMicrotasks();
+        controller.addMediaClip(
+          sourcePath: '/a.mp4',
+          kind: 'video',
+          startMs: 0,
+          endMs: 4000,
+          sourceDurationMs: 4000,
+        );
+        async.flushMicrotasks();
+
+        final FakePreviewMediaFactory factory = FakePreviewMediaFactory(
+          clockMs: () => now,
+        );
+        final PreviewEngine engine = PreviewEngine(
+          controller: controller,
+          mediaFactory: factory,
+          clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
+        );
+        addTearDown(engine.dispose);
+        addTearDown(controller.dispose);
+
+        // 첫 정렬을 끝낸 뒤(일시정지 상태) 연달아 스크럽한다.
+        engine.play();
+        async.flushMicrotasks();
+        engine.pause();
+        async.flushMicrotasks();
+
+        final FakePreviewMedia media = factory.media['/a.mp4']!;
+        final int seeksBefore = media.seekCount;
+        controller.setPlayhead(2000);
+        controller.setPlayhead(2400);
+        async.flushMicrotasks();
+
+        expect(media.seekCount - seeksBefore, 1, reason: '마지막 요청만 반영');
+        expect(media.positionMs, closeTo(2400, 60));
+      });
+    });
+  });
+
   group('프리뷰 오버레이', () {
     testWidgets('자막과 텍스트가 재생 헤드 시각에 맞춰 보인다', (
       WidgetTester tester,
@@ -594,6 +776,51 @@ void main() {
       await tester.pump();
       expect(find.text('상하이 여행'), findsOneWidget);
       expect(find.text('첫날 아침'), findsNothing);
+    });
+
+    testWidgets('영상 표면은 불투명할 때 Opacity·FittedBox 래퍼 없이 비율만 맞춘다', (
+      WidgetTester tester,
+    ) async {
+      final EditorController controller = await _controller();
+      addTearDown(controller.dispose);
+      await controller.addMediaClip(
+        sourcePath: '/a.mp4',
+        kind: 'video',
+        startMs: 0,
+        endMs: 4000,
+        sourceDurationMs: 4000,
+      );
+
+      final PreviewEngine engine = PreviewEngine(
+        controller: controller,
+        mediaFactory: FakePreviewMediaFactory(),
+      );
+      addTearDown(engine.dispose);
+
+      // 일시정지 상태에서 위치를 옮기면 플레이어가 그 위치로 열리고 정렬된다.
+      controller.setPlayhead(100);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildEditorTheme(),
+          home: Scaffold(
+            body: PreviewPanel(controller: controller, engine: engine),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final Finder panel = find.byType(PreviewPanel);
+      // 영상 텍스처는 표시 크기에 바로 맞춰 그린다(축소 변환 래퍼 없음).
+      expect(
+        find.descendant(of: panel, matching: find.byType(FittedBox)),
+        findsNothing,
+      );
+      // 불투명 클립을 Opacity 로 감싸지 않는다(저장 레이어/복사 경로 방지).
+      expect(
+        find.descendant(of: panel, matching: find.byType(Opacity)),
+        findsNothing,
+      );
     });
 
     testWidgets('영상이 없는 구간은 안내 문구를 보여 준다', (WidgetTester tester) async {

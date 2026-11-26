@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
@@ -314,11 +315,15 @@ class PreviewMediaException implements Exception {
 class MediaPositionClock {
   MediaPositionClock({
     this.maxExtrapolationMs = 160,
+    this.maxReportGapMs = 400,
     this.maxStepBackMs = 250,
   });
 
-  /// 마지막으로 받은 위치보다 앞서 추정하는 최대치(ms).
+  /// 한 번의 보고 사이에서 앞서 추정하는 **최소** 한도(ms).
   final int maxExtrapolationMs;
+
+  /// 보고 간격이 길어질 때 보간 상한을 늘려 줄 수 있는 절대 한계(ms).
+  final int maxReportGapMs;
 
   /// 이보다 작게 뒤로 간 보고는 잔떨림으로 보고 무시한다.
   final int maxStepBackMs;
@@ -327,7 +332,21 @@ class MediaPositionClock {
   int _anchorClock = 0;
   int _lastRaw = -1;
   int _lastValue = 0;
+  int _reportIntervalMs = 0;
   bool _primed = false;
+
+  /// 지금 보고 주기에서 허용하는 앞섬 한도(ms).
+  ///
+  /// 플러그인은 100ms 간격으로 위치를 보고하지만, 플랫폼 채널 왕복이 밀리면
+  /// 간격이 그보다 길어진다. 상한을 160ms 로 고정해 두면 간격이 160ms 를 넘는
+  /// 순간 플레이헤드가 **멈췄다가 다음 보고에서 점프**해, 재생이 끊긴 것처럼
+  /// 보인다. 그래서 최근 관측한 보고 간격의 두 배까지 상한을 늘린다(최대
+  /// [maxReportGapMs]). 플레이어가 정말 멈추면(버퍼링) 이 한도에서 멈춘다.
+  int get extrapolationLimitMs {
+    final int adaptive = _reportIntervalMs * 2;
+    final int limit = math.max(adaptive, maxExtrapolationMs);
+    return math.min(limit, maxReportGapMs);
+  }
 
   /// 마지막 계산값(뒤로 가지 않게 하는 기준).
   int get value => _lastValue;
@@ -337,6 +356,7 @@ class MediaPositionClock {
     _anchorClock = 0;
     _lastRaw = -1;
     _lastValue = 0;
+    _reportIntervalMs = 0;
     _primed = false;
   }
 
@@ -353,6 +373,10 @@ class MediaPositionClock {
     }
     if (raw != _lastRaw) {
       // 새 보고(또는 시크): 그 값에 기준을 다시 붙인다.
+      final int interval = nowMs - _anchorClock;
+      if (interval > 0 && interval <= maxReportGapMs) {
+        _reportIntervalMs = interval;
+      }
       _lastRaw = raw;
       _anchorSource = raw;
       _anchorClock = nowMs;
@@ -368,8 +392,9 @@ class MediaPositionClock {
     if (elapsed < 0) {
       elapsed = 0;
     }
-    if (elapsed > maxExtrapolationMs) {
-      elapsed = maxExtrapolationMs;
+    final int limit = extrapolationLimitMs;
+    if (elapsed > limit) {
+      elapsed = limit;
     }
     final int next = _anchorSource + elapsed;
     if (next > _lastValue) {
@@ -473,6 +498,19 @@ class PreviewEngine extends ChangeNotifier {
   int _pendingSeekMs = -1;
   bool _seekInFlight = false;
 
+  /// [_sync] 가 실행 중인가(겹쳐 들어온 요청은 한 번만 더 돌린다).
+  bool _syncInFlight = false;
+  bool _syncAgain = false;
+  bool _syncAgainForceSeek = false;
+
+  /// 마지막으로 플레이어를 정렬한 선택과 상태.
+  ///
+  /// 재생 중 매 틱 플랫폼을 건드리지 않으려면 "무엇이 바뀌었는지"를 이 값과
+  /// 비교해야 한다. 같은 클립을 이어 재생하는 동안에는 둘 다 그대로이므로
+  /// 틱은 플레이헤드만 옮긴다.
+  PreviewSelection? _syncedSelection;
+  EditorState? _syncedState;
+
   /// 열기에 실패한 경로(같은 경로를 매 프레임 다시 열지 않는다).
   String? _failedVisualPath;
   String? _failedAudioPath;
@@ -561,6 +599,9 @@ class PreviewEngine extends ChangeNotifier {
     // 이전에 열지 못한 파일도 다시 시도한다.
     _failedVisualPath = null;
     _failedAudioPath = null;
+    // 재생을 시작하면 플레이어를 다시 한 번 정렬한다(아래 _sync).
+    _syncedSelection = null;
+    _syncedState = null;
     _playing = true;
     _wallAnchorTimeline = _position.value;
     _wallAnchorClock = _clockMs();
@@ -581,6 +622,8 @@ class PreviewEngine extends ChangeNotifier {
     _visualStarted = false;
     _audioStarted = false;
     _dropPreload();
+    _syncedSelection = null;
+    _syncedState = null;
     // 여기서 한 번만 컨트롤러에 알린다(재생 중 매 프레임 알리지 않는다).
     _commitToController(_position.value);
     unawaited(_safeCall(() async {
@@ -625,8 +668,11 @@ class PreviewEngine extends ChangeNotifier {
   // ------------------------------------------------------------------ 재생 루프
 
   void _onTick() {
+    if (!_playing || _disposed) {
+      return;
+    }
     final EditorState? state = _controller.state;
-    if (!_playing || _disposed || state == null) {
+    if (state == null) {
       return;
     }
     final int now = _clockMs();
@@ -659,13 +705,62 @@ class PreviewEngine extends ChangeNotifier {
     }
     _setPosition(next);
 
-    // 2) 새 위치에 맞는 클립으로 플레이어를 맞춘다(같은 클립이면 시크 없음).
+    // 2) 플레이어 정렬(플랫폼 호출·비동기 체인)은 **바뀐 틱에만** 한다.
+    //
+    // 같은 클립을 이어 재생하는 동안에는 선택도 상태도 그대로이므로 여기서
+    // 아무 일도 일어나지 않는다 — 틱은 플레이헤드만 옮긴다. 매 틱 async
+    // 체인을 쌓으면 UI/래스터 프레임이 밀려 영상이 끊긴다.
     final PreviewSelection sel = next == current
         ? currentSelection
         : resolvePreviewSelection(state, next);
-    // 미리 열어 둔 컨트롤러가 먼저 소비되도록 동기화를 먼저 시작한다.
-    unawaited(_sync(sel: sel, atMs: next));
-    _maybePreload(state, sel, next);
+    if (_needsSync(state, sel)) {
+      unawaited(_sync(sel: sel, atMs: next));
+      return;
+    }
+
+    // 3) 경계가 가까울 때만 다음 클립을 미리 연다(그 밖에는 아무 일도 없음).
+    final ClipView? clip = sel.visualClip;
+    if (clip != null && clip.endOffsetMs - next <= preloadLeadMs) {
+      _maybePreload(state, sel, next);
+    }
+  }
+
+  /// 지금 플레이어를 다시 정렬해야 하는가.
+  ///
+  /// 재생 중 틱마다 플랫폼/비동기 작업을 돌리지 않기 위해, 실제로 무엇이
+  /// 바뀌었을 때만 참을 돌려준다.
+  bool _needsSync(EditorState state, PreviewSelection sel) {
+    // 클립이 바뀌었거나 빈 구간으로 들어갔다.
+    if (!_sameSelection(sel, _syncedSelection)) {
+      return true;
+    }
+    // 편집으로 타임라인 상태가 바뀌었다.
+    if (!identical(state, _syncedState)) {
+      return true;
+    }
+    // 새로 연 미디어가 아직 재생 전이다(열기 직후 한 번).
+    if (sel.visualPath != null && _visual != null && !_visualStarted) {
+      return true;
+    }
+    if (sel.audioPath != null && _audio != null && !_audioStarted) {
+      return true;
+    }
+    return false;
+  }
+
+  /// 재생에 의미 있는 두 선택이 같은가.
+  bool _sameSelection(PreviewSelection? a, PreviewSelection? b) {
+    if (a == null || b == null) {
+      return false;
+    }
+    return a.visualClip?.id == b.visualClip?.id &&
+        a.audioClip?.id == b.audioClip?.id &&
+        a.visualPath == b.visualPath &&
+        a.audioPath == b.audioPath &&
+        a.isGap == b.isGap &&
+        (a.volume - b.volume).abs() < 0.001 &&
+        (a.audioVolume - b.audioVolume).abs() < 0.001 &&
+        (a.opacity - b.opacity).abs() < 0.001;
   }
 
   /// 재생 중인 플레이어 위치를 타임라인 시각으로 돌려준다(없으면 null).
@@ -701,6 +796,8 @@ class PreviewEngine extends ChangeNotifier {
     _visualStarted = false;
     _audioStarted = false;
     _dropPreload();
+    _syncedSelection = null;
+    _syncedState = null;
     _commitToController(_position.value);
     unawaited(_safeCall(() async {
       await _visual?.pause();
@@ -755,7 +852,49 @@ class PreviewEngine extends ChangeNotifier {
   ///
   /// [forceSeek]는 사용자가 위치를 옮긴 직후에만 준다. 재생 중에는 이 값이
   /// 없으면 클립이 바뀐 경우(새로 연 미디어)에만 시크한다.
+  ///
+  /// **동시 실행 금지**: 열기·시크가 겹치면 같은 플레이어에 두 갈래 명령이
+  /// 섞여 들어가 재생이 끊긴다. 실행 중에 들어온 요청은 버리지 않고 한 번만
+  /// 더 돌린다(최신 상태로 다시 계산).
   Future<void> _sync({
+    PreviewSelection? sel,
+    int? atMs,
+    bool forceSeek = false,
+  }) async {
+    if (_disposed) {
+      return;
+    }
+    if (_syncInFlight) {
+      _syncAgain = true;
+      _syncAgainForceSeek = _syncAgainForceSeek || forceSeek;
+      return;
+    }
+    _syncInFlight = true;
+    try {
+      bool first = true;
+      bool force = forceSeek;
+      for (int attempt = 0; attempt < 3; attempt++) {
+        _syncAgain = false;
+        await _syncOnce(
+          sel: first ? sel : null,
+          atMs: first ? atMs : null,
+          forceSeek: force,
+        );
+        first = false;
+        if (_disposed || !_syncAgain) {
+          break;
+        }
+        force = _syncAgainForceSeek;
+        _syncAgainForceSeek = false;
+      }
+    } finally {
+      _syncAgain = false;
+      _syncAgainForceSeek = false;
+      _syncInFlight = false;
+    }
+  }
+
+  Future<void> _syncOnce({
     PreviewSelection? sel,
     int? atMs,
     bool forceSeek = false,
@@ -792,6 +931,10 @@ class PreviewEngine extends ChangeNotifier {
         await audio?.pause();
       });
     }
+
+    // 이 선택으로 플레이어를 맞춘 것을 기록한다(다음 틱은 바뀐 것이 없으면 아무 일도 안 함).
+    _syncedSelection = selection;
+    _syncedState = state;
   }
 
   Future<void> _syncVisual(
@@ -1184,6 +1327,11 @@ class FakePreviewMedia implements PreviewMedia {
   bool ready = true;
   bool playing = false;
   int seekCount = 0;
+  int playCount = 0;
+  int pauseCount = 0;
+  int volumeCalls = 0;
+  int speedCalls = 0;
+  int positionReads = 0;
   double volume = 1;
   double speed = 1;
   bool disposed = false;
@@ -1196,6 +1344,7 @@ class FakePreviewMedia implements PreviewMedia {
 
   @override
   int get positionMs {
+    positionReads++;
     if (!playing) {
       return _base;
     }
@@ -1212,6 +1361,7 @@ class FakePreviewMedia implements PreviewMedia {
 
   @override
   Future<void> play() async {
+    playCount++;
     if (playing) {
       return;
     }
@@ -1221,6 +1371,7 @@ class FakePreviewMedia implements PreviewMedia {
 
   @override
   Future<void> pause() async {
+    pauseCount++;
     if (playing) {
       _base = positionMs;
     }
@@ -1236,11 +1387,13 @@ class FakePreviewMedia implements PreviewMedia {
 
   @override
   Future<void> setVolume(double value) async {
+    volumeCalls++;
     volume = value;
   }
 
   @override
   Future<void> setSpeed(double value) async {
+    speedCalls++;
     speed = value;
   }
 

@@ -139,6 +139,9 @@ def copy_tree(src: pathlib.Path, dst: pathlib.Path, names: list[str]) -> None:
 ANDROID_APP_LABEL = "muud-edits"
 ANDROID_ICON_SIZES = ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"]
 
+# Android 렌더러 플래그(FlutterEmbedder 가 AndroidManifest 의 meta-data 로 읽는다).
+ANDROID_IMPELLER_FLAG = "io.flutter.embedding.android.EnableImpeller"
+
 
 def patch_android_branding(android: pathlib.Path) -> None:
     """런처에 보이는 이름과 아이콘을 muud-edits 로 맞춘다(여러 번 실행해도 안전)."""
@@ -166,6 +169,45 @@ def patch_android_branding(android: pathlib.Path) -> None:
         shutil.copy2(source, target)
     note(f"런처 아이콘 교체: {len(ANDROID_ICON_SIZES)}개 밀도")
 
+
+
+def patch_android_rendering(android: pathlib.Path) -> None:
+    """영상 텍스처 합성 경로를 Skia(GLES)로 고정한다 — Impeller opt-out.
+
+    왜:
+      * 영상 한 편을 그냥 이어 재생할 때 화면이 고르지 않게 흐르는(judder)
+        보고가 Impeller 의 외부 텍스처(ImageReader) 경로에 집중되어 있다.
+        flutter/flutter#162795(“Disabling Impeller makes the video smooth”),
+        #180831(외부 텍스처 가져오기 비용), #191193(textureView 만 judder,
+        Skia·platformView 는 매끄러움).
+      * Flutter 3.27 부터 Android API 29+ 는 Impeller(Vulkan)가 기본이고,
+        이 경로에서는 앱 코드가 개입할 수 없다. 앱 UI 는 그대로 두고 영상
+        표면만 오래 검증된 SurfaceTexture 경로로 내린다.
+
+    대가 / 되돌리기:
+      * Flutter 3.38+ 는 opt-out 을 deprecated 로 표시한다(릴리스 로그 경고만,
+        동작은 그대로). 3.50.1 엔진에 Skia GLES 경로가 남아 있는 것을 확인하고
+        넣었다(기본값 = Impeller).
+      * 이 meta-data 한 줄을 지우면 렌더러가 원래(Impeller)로 돌아간다.
+    """
+    manifest = android / "app" / "src" / "main" / "AndroidManifest.xml"
+    text = read(manifest)
+    if ANDROID_IMPELLER_FLAG in text:
+        note(f"{manifest.relative_to(ROOT)} 는 이미 렌더러 플래그가 있습니다(건너뜀)")
+        return
+    anchor = "</application>"
+    if text.count(anchor) != 1:
+        die(
+            f"{manifest.relative_to(ROOT)} 에서 `</application>` 앵커를 하나 찾지 못했습니다."
+        )
+    block = (
+        "        <!-- muud: 영상 미리보기 렌더링 경로 — scripts/ci/wire_native.py 가 추가 -->\n"
+        f'        <meta-data android:name="{ANDROID_IMPELLER_FLAG}" android:value="false" />\n'
+    )
+    index = text.find(anchor)
+    line_start = text.rfind("\n", 0, index) + 1
+    write(manifest, text[:line_start] + block + text[line_start:])
+    note(f"{manifest.relative_to(ROOT)} 패치: Impeller opt-out (Skia GLES)")
 
 
 def patch_android_repositories(android: pathlib.Path) -> None:
@@ -240,6 +282,9 @@ dependencies {{
 
     # 3-b) 앱 이름·런처 아이콘 (템플릿 기본값 대신).
     patch_android_branding(android)
+
+    # 3-c) 영상 미리보기 렌더링 경로(Impeller opt-out → Skia GLES).
+    patch_android_rendering(android)
 
     # 3-c) Maven Central 미러(GitHub 러너가 429 Too Many Requests 를 맞는 경우 대비).
     patch_android_repositories(android)
