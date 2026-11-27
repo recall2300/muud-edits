@@ -197,4 +197,22 @@ void main() {
     expect(play.width, EditorDensity.compact.minTarget);
     expect(play.width, lessThan(48));
   });
+
+  testWidgets('좁은 화면의 시작 화면과 내보내기 시트가 넘치지 않는다', (
+    WidgetTester tester,
+  ) async {
+    await _pumpEditor(tester, const Size(390, 844), withClip: false);
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('영상 · 사진 추가'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('내보내기'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('내보내기 계획'), findsOneWidget);
+    // 시트는 스크롤되므로 하단의 실행 버튼도 트리에 존재한다.
+    expect(find.text('내보내기 시작'), findsOneWidget);
+  });
 }
