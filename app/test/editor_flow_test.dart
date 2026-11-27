@@ -41,6 +41,11 @@ Future<EditorController> _pumpEditor(
   return controller;
 }
 
+Future<void> _openProjectMenu(WidgetTester tester) async {
+  await tester.tap(find.byTooltip('프로젝트 메뉴'));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   // 내보내기 경로는 path_provider 플러그인에서 온다. 테스트에는 플러그인이 없으므로
   // 문서 디렉터리를 흉내 내 준다(이게 없으면 내보내기가 시작되지 않는다).
@@ -108,7 +113,8 @@ void main() {
     await controller.addMediaFile('/media/first.mp4');
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('새 프로젝트'));
+    await _openProjectMenu(tester);
+    await tester.tap(find.text('새로 만들기'));
     await tester.pumpAndSettle();
     expect(find.text('저장하지 않은 편집이 있습니다. 버리고 새로 시작할까요?'), findsOneWidget);
 
@@ -116,7 +122,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(controller.state!.summary.clipCount, 1);
 
-    await tester.tap(find.byTooltip('새 프로젝트'));
+    await _openProjectMenu(tester);
+    await tester.tap(find.text('새로 만들기'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('새로 시작'));
     await tester.pumpAndSettle();
@@ -171,12 +178,15 @@ void main() {
     expect(controller.state!.subtitles, isEmpty);
   });
 
-  testWidgets('저장 버튼은 프로젝트를 저장하고 위치를 안내한다', (WidgetTester tester) async {
+  testWidgets('저장 메뉴는 프로젝트를 저장하고 위치를 안내한다', (
+    WidgetTester tester,
+  ) async {
     final EditorController controller = await _pumpEditor(tester);
     await controller.addMediaFile('/media/first.mp4');
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byTooltip('저장'));
+    await _openProjectMenu(tester);
+    await tester.tap(find.text('저장'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 

@@ -7,14 +7,30 @@ import 'package:path_provider/path_provider.dart';
 import '../bridge_api.dart';
 import '../models.dart';
 import '../theme.dart';
+import 'editor_section.dart';
 import 'inspector_panel.dart';
 import 'preview_engine.dart';
 import 'preview_panel.dart';
 import 'timeline_view.dart';
+import 'workspace.dart';
+
+/// 상단 바 키(레이아웃 계약 테스트용).
+const Key editorTopBarKey = ValueKey<String>('editor-top-bar');
+const Key editorTransportKey = ValueKey<String>('editor-transport');
 
 /// 편집 화면 전체.
 ///
-/// 레이아웃: [프리뷰] → [트랜스포트] → [타임라인] → (선택 시) [인스펙터]
+/// Astryx 의 outside-in 구조를 따른다:
+///
+/// ```
+/// 상단 바(프로젝트 이름 · 실행 취소/다시 실행 · 내보내기 하나의 primary)
+/// ├─ [미리보기 | 인스펙터]   ← 넓은 화면. 경계는 드래그로 리사이즈
+/// ├─ 트랜스포트(재생 · 편집 도구)
+/// └─ 타임라인                ← 높이 조절 핸들
+/// ```
+///
+/// 좁은 화면(<768px)에서는 인스펙터가 하단 BottomSheet 로 스왑되고,
+/// 툴바는 48dp 터치 타깃을 확보한다([EditorWorkspace]).
 class EditorScreen extends StatefulWidget {
   const EditorScreen({super.key, this.controller, this.previewEngine});
 
@@ -32,8 +48,7 @@ class _EditorScreenState extends State<EditorScreen> {
   late final EditorController _controller =
       widget.controller ?? EditorController();
   late final PreviewEngine _engine =
-      widget.previewEngine ??
-      PreviewEngine(controller: _controller);
+      widget.previewEngine ?? PreviewEngine(controller: _controller);
 
   bool get _ownsController => widget.controller == null;
 
@@ -85,17 +100,14 @@ class _EditorScreenState extends State<EditorScreen> {
       if (!mounted) {
         return;
       }
-      final String where =
-          _controller.lastSavedProjectDisplay ?? path;
+      final String where = _controller.lastSavedProjectDisplay ?? path;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('프로젝트를 저장했습니다\n$where'),
           action: _controller.error == null
               ? SnackBarAction(
                   label: '공유',
-                  onPressed: () => unawaited(
-                    _controller.saveShare(path),
-                  ),
+                  onPressed: () => unawaited(_controller.saveShare(path)),
                 )
               : null,
         ),
@@ -159,7 +171,6 @@ class _EditorScreenState extends State<EditorScreen> {
       final bool? confirmed = await showDialog<bool>(
         context: context,
         builder: (BuildContext context) => AlertDialog(
-          backgroundColor: EditorPalette.surface,
           title: const Text('새 프로젝트'),
           content: const Text('저장하지 않은 편집이 있습니다. 버리고 새로 시작할까요?'),
           actions: <Widget>[
@@ -181,7 +192,7 @@ class _EditorScreenState extends State<EditorScreen> {
     await _controller.newProject();
   }
 
-  /// 파일 선택 → 프로브 → 클립 추가. 파일 선택기를 쓸 수 없으면 수동 입력。
+  /// 파일 선택 → 프로브 → 클립 추가. 파일 선택기를 쓸 수 없으면 수동 입력.
   Future<void> _addMedia() async {
     _pauseForEdit();
     PlatformFile? picked;
@@ -226,7 +237,6 @@ class _EditorScreenState extends State<EditorScreen> {
         return StatefulBuilder(
           builder: (BuildContext context, StateSetter setDialogState) {
             return AlertDialog(
-              backgroundColor: EditorPalette.surface,
               title: const Text('미디어 추가'),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -236,6 +246,7 @@ class _EditorScreenState extends State<EditorScreen> {
                     controller: pathController,
                     decoration: const InputDecoration(labelText: '파일 경로'),
                   ),
+                  const SizedBox(height: EditorSpacing.sm),
                   Row(
                     children: <Widget>[
                       Expanded(
@@ -245,7 +256,7 @@ class _EditorScreenState extends State<EditorScreen> {
                           decoration: const InputDecoration(labelText: '길이(초)'),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: EditorSpacing.md),
                       SegmentedButton<String>(
                         segments: const <ButtonSegment<String>>[
                           ButtonSegment<String>(
@@ -264,15 +275,11 @@ class _EditorScreenState extends State<EditorScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: EditorSpacing.sm),
                   const Text(
                     '※ 네이티브 미디어 엔진이 연결되어 있으면 길이·해상도는 자동으로 읽습니다.\n'
                     '여기서는 엔진이 없을 때를 위한 수동 입력만 받습니다.',
-                    style: TextStyle(
-                      color: EditorPalette.textMuted,
-                      fontSize: 10,
-                      height: 1.4,
-                    ),
+                    style: EditorText.caption,
                   ),
                 ],
               ),
@@ -338,7 +345,6 @@ class _EditorScreenState extends State<EditorScreen> {
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          backgroundColor: EditorPalette.surface,
           title: Text(title),
           content: TextField(
             controller: controller,
@@ -368,7 +374,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _pauseForEdit();
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: EditorPalette.surface,
+      backgroundColor: EditorSurfaces.panel,
       isScrollControlled: true,
       builder: (BuildContext context) => _SubtitlesSheet(controller: _controller),
     );
@@ -379,7 +385,7 @@ class _EditorScreenState extends State<EditorScreen> {
     unawaited(_controller.prepareExport());
     showModalBottomSheet<void>(
       context: context,
-      backgroundColor: EditorPalette.surface,
+      backgroundColor: EditorSurfaces.panel,
       isScrollControlled: true,
       builder: (BuildContext context) {
         return _ExportSheet(controller: _controller);
@@ -396,239 +402,503 @@ class _EditorScreenState extends State<EditorScreen> {
       builder: (BuildContext context, Widget? child) {
         final EditorState? state = _controller.state;
         final ProjectSummary? summary = state?.summary;
+        final bool compact =
+            MediaQuery.sizeOf(context).width < EditorBreakpoints.compact;
+        final bool emptyProject =
+            summary != null &&
+            summary.clipCount == 0 &&
+            summary.subtitleCount == 0;
 
         return Scaffold(
-          appBar: AppBar(
-            backgroundColor: EditorPalette.surface,
-            titleSpacing: 12,
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
+          body: SafeArea(
+            bottom: false,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    Text(
-                      summary?.name ?? 'muud-edits',
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
+                _buildTopBar(context, summary),
+                if (_controller.error != null)
+                  _MessageBar(
+                    message: _controller.error!,
+                    isError: true,
+                    onClose: _controller.clearMessages,
+                    retryLabel: _controller.ready ? null : '다시 시도',
+                    onRetry: _controller.ready
+                        ? null
+                        : () => unawaited(_controller.bootstrap()),
+                  ),
+                if (_controller.notice != null)
+                  _MessageBar(
+                    message: _controller.notice!,
+                    isError: false,
+                    onClose: _controller.clearMessages,
+                  ),
+                Expanded(
+                  child: EditorWorkspace(
+                    controller: _controller,
+                    preview: emptyProject
+                        ? _StartView(
+                            onAddMedia: _controller.ready ? _addMedia : null,
+                            onAddText: _controller.ready ? _addText : null,
+                            onAddSubtitle: _controller.ready
+                                ? _addSubtitle
+                                : null,
+                            onExport: _controller.ready ? _openExportSheet : null,
+                          )
+                        : PreviewPanel(controller: _controller, engine: _engine),
+                    transport: _buildTransport(context, compact),
+                    timeline: TimelineView(
+                      controller: _controller,
+                      playhead: _engine.position,
+                      onScrubStart: _engine.pause,
                     ),
-                    if (summary != null && summary.dirty) ...<Widget>[
-                      const SizedBox(width: 6),
-                      Container(
-                        width: 6,
-                        height: 6,
-                        decoration: const BoxDecoration(
-                          color: EditorPalette.accent,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                Text(
-                  summary == null
-                      ? '코어 연결 중…'
-                      : '${summary.durationLabel} · ${summary.clipCount}클립 · 자막 ${summary.subtitleCount}',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: EditorPalette.textMuted,
+                    inspectorBuilder: (VoidCallback onClose) => InspectorPanel(
+                      controller: _controller,
+                      onClose: onClose,
+                      closeTooltip: compact ? '닫기' : '선택 해제',
+                    ),
                   ),
                 ),
               ],
             ),
-            actions: <Widget>[
-              if (_controller.busy)
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 12),
-                  child: SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              IconButton(
-                tooltip: '새 프로젝트',
-                onPressed: _controller.ready ? _newProject : null,
-                icon: const Icon(Icons.add_box_outlined),
-              ),
-              IconButton(
-                tooltip: summary?.undoLabel == null
-                    ? '되돌리기'
-                    : '되돌리기 (${summary?.undoLabel})',
-                onPressed: (summary?.canUndo ?? false)
-                    ? _controller.undo
-                    : null,
-                icon: const Icon(Icons.undo),
-              ),
-              IconButton(
-                tooltip: '다시 적용',
-                onPressed: (summary?.canRedo ?? false)
-                    ? _controller.redo
-                    : null,
-                icon: const Icon(Icons.redo),
-              ),
-              IconButton(
-                tooltip: '프로젝트 열기',
-                onPressed: _controller.ready ? _openProject : null,
-                icon: const Icon(Icons.folder_open_outlined),
-              ),
-              IconButton(
-                tooltip: '저장',
-                onPressed: _controller.ready ? _saveProject : null,
-                icon: const Icon(Icons.save_outlined),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: FilledButton.icon(
-                  onPressed: _controller.ready ? _openExportSheet : null,
-                  icon: const Icon(Icons.ios_share, size: 16),
-                  label: const Text('내보내기'),
-                ),
-              ),
-            ],
-          ),
-          body: Column(
-            children: <Widget>[
-              if (_controller.error != null)
-                _MessageBar(
-                  message: _controller.error!,
-                  isError: true,
-                  onClose: _controller.clearMessages,
-                  retryLabel: _controller.ready ? null : '다시 시도',
-                  onRetry: _controller.ready
-                      ? null
-                      : () => unawaited(_controller.bootstrap()),
-                ),
-              if (_controller.notice != null)
-                _MessageBar(
-                  message: _controller.notice!,
-                  isError: false,
-                  onClose: _controller.clearMessages,
-                ),
-              Expanded(
-                child:
-                    (summary != null &&
-                        summary.clipCount == 0 &&
-                        summary.subtitleCount == 0)
-                    ? _StartView(
-                        onAddMedia: _controller.ready ? _addMedia : null,
-                        onAddText: _controller.ready ? _addText : null,
-                        onAddSubtitle: _controller.ready ? _addSubtitle : null,
-                        onExport: _controller.ready ? _openExportSheet : null,
-                      )
-                    : PreviewPanel(controller: _controller, engine: _engine),
-              ),
-              _buildTransport(summary),
-              SizedBox(
-                height: 206,
-                child: TimelineView(
-                  controller: _controller,
-                  playhead: _engine.position,
-                  onScrubStart: _engine.pause,
-                ),
-              ),
-              if (_controller.selected != null)
-                Container(
-                  height: 190,
-                  decoration: const BoxDecoration(
-                    color: EditorPalette.surface,
-                    border: Border(
-                      top: BorderSide(color: EditorPalette.outline),
-                    ),
-                  ),
-                  child: InspectorPanel(controller: _controller),
-                ),
-            ],
           ),
         );
       },
     );
   }
 
-  Widget _buildTransport(ProjectSummary? summary) {
+  // ------------------------------------------------------------------ top bar
+
+  /// 상단 바: 프로젝트 이름 하나를 lead 로, 실행 취소/다시 실행, 그리고
+  /// **단 하나의 primary action**(내보내기)만 강조한다. 새 프로젝트·열기·저장은
+  /// 프로젝트 메뉴로 내려 시선을 뺏지 않게 한다.
+  Widget _buildTopBar(BuildContext context, ProjectSummary? summary) {
+    final double width = MediaQuery.sizeOf(context).width;
+    final bool compact = width < EditorBreakpoints.compact;
+    final EditorDensity density = EditorDensity.forWidth(width);
+
+    final List<Widget> actions = <Widget>[
+      if (_controller.busy)
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: EditorSpacing.sm),
+          child: SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      _BarIconButton(
+        tooltip: summary?.undoLabel == null
+            ? '되돌리기'
+            : '되돌리기 (${summary?.undoLabel})',
+        icon: Icons.undo,
+        density: density,
+        onPressed: (summary?.canUndo ?? false) ? _controller.undo : null,
+      ),
+      _BarIconButton(
+        tooltip: '다시 적용',
+        icon: Icons.redo,
+        density: density,
+        onPressed: (summary?.canRedo ?? false) ? _controller.redo : null,
+      ),
+      _ProjectMenu(
+        density: density,
+        ready: _controller.ready,
+        onNew: _newProject,
+        onOpen: _openProject,
+        onSave: _saveProject,
+      ),
+      const SizedBox(width: EditorSpacing.sm),
+      if (compact)
+        IconButton.filled(
+          tooltip: '내보내기',
+          onPressed: _controller.ready ? _openExportSheet : null,
+          constraints: BoxConstraints.tightFor(
+            width: density.minTarget,
+            height: density.minTarget,
+          ),
+          icon: const Icon(Icons.ios_share, size: 20),
+        )
+      else
+        FilledButton.icon(
+          onPressed: _controller.ready ? _openExportSheet : null,
+          icon: const Icon(Icons.ios_share, size: 16),
+          label: const Text('내보내기'),
+        ),
+    ];
+
+    final String meta = summary == null
+        ? '코어 연결 중…'
+        : '${summary.durationLabel} · ${summary.clipCount}클립 · '
+              '자막 ${summary.subtitleCount}';
+
     return Container(
-      height: 46,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
+      key: editorTopBarKey,
+      height: compact ? 56 : 58,
+      padding: const EdgeInsets.only(
+        left: EditorSpacing.lg,
+        right: EditorSpacing.md,
+      ),
       decoration: const BoxDecoration(
-        color: EditorPalette.surface,
-        border: Border(top: BorderSide(color: EditorPalette.outline)),
+        color: EditorSurfaces.panel,
+        border: Border(
+          bottom: BorderSide(
+            color: EditorSurfaces.divider,
+            width: EditorStroke.hairline,
+          ),
+        ),
       ),
       child: Row(
         children: <Widget>[
-          IconButton(
-            tooltip: '한 프레임 뒤로',
-            onPressed: () {
-              _engine.pause();
-              _controller.stepFrames(-1);
-            },
-            icon: const Icon(Icons.skip_previous, size: 20),
-          ),
-          IconButton(
-            tooltip: _playing ? '일시정지' : '재생',
-            onPressed: _controller.ready ? _togglePlay : null,
-            icon: Icon(
-              _playing ? Icons.pause_circle_filled : Icons.play_circle_filled,
-              size: 30,
-              color: EditorPalette.accent,
+          Container(
+            width: 30,
+            height: 30,
+            decoration: const BoxDecoration(
+              color: EditorSurfaces.accentSoft,
+              borderRadius: EditorRadius.smAll,
+            ),
+            child: const Icon(
+              Icons.movie_filter_outlined,
+              size: 18,
+              color: EditorText.primary,
             ),
           ),
-          IconButton(
-            tooltip: '한 프레임 앞으로',
-            onPressed: () {
-              _engine.pause();
-              _controller.stepFrames(1);
-            },
-            icon: const Icon(Icons.skip_next, size: 20),
-          ),
-          const SizedBox(width: 4),
-          // 재생 중에는 재생 헤드 값만 구독해 타임코드만 다시 그린다.
-          ValueListenableBuilder<int>(
-            valueListenable: _engine.position,
-            builder: (BuildContext context, int playheadMs, Widget? child) {
-              return Text(
-                formatTimecode(playheadMs),
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+          const SizedBox(width: EditorSpacing.md),
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Row(
+                  children: <Widget>[
+                    Flexible(
+                      child: Text(
+                        summary?.name ?? 'muud-edits',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: EditorText.lead,
+                      ),
+                    ),
+                    if (summary != null && summary.dirty) ...<Widget>[
+                      const SizedBox(width: EditorSpacing.sm),
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: const BoxDecoration(
+                          color: EditorSurfaces.accent,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
-              );
-            },
+                if (!compact)
+                  Text(
+                    meta,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: EditorText.caption,
+                  ),
+              ],
+            ),
           ),
-          const Spacer(),
-          IconButton(
-            tooltip: '재생 헤드에서 분할',
-            onPressed: _controller.ready
-                ? () {
-                    _pauseForEdit();
-                    _controller.splitAtPlayhead();
-                  }
-                : null,
-            icon: const Icon(Icons.content_cut, size: 20),
-          ),
-          IconButton(
-            tooltip: '미디어 추가',
-            onPressed: _controller.ready ? _addMedia : null,
-            icon: const Icon(Icons.video_call_outlined, size: 20),
-          ),
-          IconButton(
-            tooltip: '텍스트 추가',
-            onPressed: _controller.ready ? _addText : null,
-            icon: const Icon(Icons.title, size: 20),
-          ),
-          IconButton(
-            tooltip: '자막 목록 · 편집',
-            onPressed: _controller.ready ? _openSubtitlesSheet : null,
-            icon: const Icon(Icons.subtitles_outlined, size: 20),
-          ),
-          IconButton(
-            tooltip: '자막 추가',
-            onPressed: _controller.ready ? _addSubtitle : null,
-            icon: const Icon(Icons.playlist_add, size: 20),
-          ),
+          ...actions,
         ],
       ),
+    );
+  }
+
+  // ---------------------------------------------------------------- transport
+
+  /// 트랜스포트: 왼쪽은 재생(주 행동), 오른쪽은 편집 도구. 좁은 화면에서는
+  /// 도구를 오버플로 메뉴로 접어 48dp 타깃을 지킨다.
+  Widget _buildTransport(BuildContext context, bool compact) {
+    final double width = MediaQuery.sizeOf(context).width;
+    final EditorDensity density = EditorDensity.forWidth(width);
+
+    final Widget playCluster = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        _BarIconButton(
+          tooltip: '한 프레임 뒤로',
+          icon: Icons.skip_previous,
+          density: density,
+          onPressed: () {
+            _engine.pause();
+            _controller.stepFrames(-1);
+          },
+        ),
+        _BarIconButton(
+          tooltip: _playing ? '일시정지' : '재생',
+          icon: _playing ? Icons.pause_circle_filled : Icons.play_circle_filled,
+          density: density,
+          iconSize: density.iconSize + 8,
+          color: EditorSurfaces.accent,
+          onPressed: _controller.ready ? _togglePlay : null,
+        ),
+        _BarIconButton(
+          tooltip: '한 프레임 앞으로',
+          icon: Icons.skip_next,
+          density: density,
+          onPressed: () {
+            _engine.pause();
+            _controller.stepFrames(1);
+          },
+        ),
+      ],
+    );
+
+    // 재생 중에는 재생 헤드 값만 구독해 타임코드만 다시 그린다.
+    final Widget timecodeText = ValueListenableBuilder<int>(
+      valueListenable: _engine.position,
+      builder: (BuildContext context, int playheadMs, Widget? child) {
+        return Text(formatTimecode(playheadMs), style: EditorText.numeric);
+      },
+    );
+
+    final List<Widget> tools = <Widget>[
+      _BarIconButton(
+        tooltip: '재생 헤드에서 분할',
+        icon: Icons.content_cut,
+        density: density,
+        onPressed: _controller.ready
+            ? () {
+                _pauseForEdit();
+                _controller.splitAtPlayhead();
+              }
+            : null,
+      ),
+      if (!compact) ...<Widget>[
+        _BarIconButton(
+          tooltip: '미디어 추가',
+          icon: Icons.video_call_outlined,
+          density: density,
+          onPressed: _controller.ready ? _addMedia : null,
+        ),
+        _BarIconButton(
+          tooltip: '텍스트 추가',
+          icon: Icons.title,
+          density: density,
+          onPressed: _controller.ready ? _addText : null,
+        ),
+        _BarIconButton(
+          tooltip: '자막 목록 · 편집',
+          icon: Icons.subtitles_outlined,
+          density: density,
+          onPressed: _controller.ready ? _openSubtitlesSheet : null,
+        ),
+        _BarIconButton(
+          tooltip: '자막 추가',
+          icon: Icons.playlist_add,
+          density: density,
+          onPressed: _controller.ready ? _addSubtitle : null,
+        ),
+      ] else
+        SizedBox(
+          width: density.minTarget,
+          height: density.minTarget,
+          child: PopupMenuButton<String>(
+            tooltip: '추가 · 편집',
+            icon: const Icon(Icons.more_horiz),
+            onSelected: (String value) {
+              switch (value) {
+                case 'media':
+                  unawaited(_addMedia());
+                case 'text':
+                  unawaited(_addText());
+                case 'subtitle':
+                  unawaited(_addSubtitle());
+                case 'subtitles':
+                  unawaited(_openSubtitlesSheet());
+              }
+            },
+            itemBuilder: (BuildContext context) =>
+                const <PopupMenuEntry<String>>[
+                  PopupMenuItem<String>(
+                    value: 'media',
+                    child: Text('미디어 추가'),
+                  ),
+                  PopupMenuItem<String>(value: 'text', child: Text('텍스트 추가')),
+                  PopupMenuItem<String>(
+                    value: 'subtitle',
+                    child: Text('자막 추가'),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'subtitles',
+                    child: Text('자막 목록 · 편집'),
+                  ),
+                ],
+          ),
+        ),
+    ];
+
+    return Container(
+      key: editorTransportKey,
+      height: 52,
+      padding: const EdgeInsets.symmetric(horizontal: EditorSpacing.sm),
+      decoration: const BoxDecoration(
+        color: EditorSurfaces.panel,
+        border: Border(
+          top: BorderSide(
+            color: EditorSurfaces.divider,
+            width: EditorStroke.hairline,
+          ),
+          bottom: BorderSide(
+            color: EditorSurfaces.divider,
+            width: EditorStroke.hairline,
+          ),
+        ),
+      ),
+      child: Row(
+        children: <Widget>[
+          playCluster,
+          // 좁은 화면에서는 남는 폭에 맞춰 타임코드만 살짝 줄인다(타깃은 유지).
+          if (compact)
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(left: EditorSpacing.xs),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: timecodeText,
+                ),
+              ),
+            )
+          else ...<Widget>[
+            Padding(
+              padding: const EdgeInsets.only(left: EditorSpacing.xs),
+              child: timecodeText,
+            ),
+            const Spacer(),
+          ],
+          ...tools,
+        ],
+      ),
+    );
+  }
+}
+
+/// 상단 바·트랜스포트의 아이콘 버튼. [EditorDensity] 의 최소 타깃을 지킨다.
+class _BarIconButton extends StatelessWidget {
+  const _BarIconButton({
+    required this.tooltip,
+    required this.icon,
+    required this.density,
+    required this.onPressed,
+    this.iconSize,
+    this.color,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final EditorDensity density;
+  final VoidCallback? onPressed;
+  final double? iconSize;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      iconSize: iconSize ?? density.iconSize,
+      color: color,
+      // 테마의 compact 밀도가 타깃을 줄이지 않게 밀도를 고정하고
+      // 최소 타깃은 [EditorDensity] 가 정한다.
+      visualDensity: VisualDensity.standard,
+      constraints: BoxConstraints.tightFor(
+        width: density.minTarget,
+        height: density.minTarget,
+      ),
+      padding: EdgeInsets.zero,
+      icon: Icon(icon),
+    );
+  }
+}
+
+enum _ProjectAction { newProject, open, save }
+
+/// 프로젝트 메뉴 — 상단 바에서 시선을 빼앗지 않도록 보조 행동을 모아 둔다.
+class _ProjectMenu extends StatelessWidget {
+  const _ProjectMenu({
+    required this.density,
+    required this.ready,
+    required this.onNew,
+    required this.onOpen,
+    required this.onSave,
+  });
+
+  final EditorDensity density;
+  final bool ready;
+  final Future<void> Function() onNew;
+  final Future<void> Function() onOpen;
+  final Future<void> Function() onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: density.minTarget,
+      height: density.minTarget,
+      child: PopupMenuButton<_ProjectAction>(
+        tooltip: '프로젝트 메뉴',
+        icon: const Icon(Icons.folder_outlined),
+        iconSize: density.iconSize,
+        position: PopupMenuPosition.under,
+        onSelected: (_ProjectAction action) {
+          switch (action) {
+            case _ProjectAction.newProject:
+              unawaited(onNew());
+            case _ProjectAction.open:
+              unawaited(onOpen());
+            case _ProjectAction.save:
+              unawaited(onSave());
+          }
+        },
+        itemBuilder: (BuildContext context) =>
+            <PopupMenuEntry<_ProjectAction>>[
+              PopupMenuItem<_ProjectAction>(
+                value: _ProjectAction.newProject,
+                enabled: ready,
+                child: const _MenuRow(
+                  icon: Icons.add_box_outlined,
+                  label: '새로 만들기',
+                ),
+              ),
+              PopupMenuItem<_ProjectAction>(
+                value: _ProjectAction.open,
+                enabled: ready,
+                child: const _MenuRow(
+                  icon: Icons.folder_open_outlined,
+                  label: '프로젝트 열기',
+                ),
+              ),
+              PopupMenuItem<_ProjectAction>(
+                value: _ProjectAction.save,
+                enabled: ready,
+                child: const _MenuRow(
+                  icon: Icons.save_outlined,
+                  label: '저장',
+                ),
+              ),
+            ],
+      ),
+    );
+  }
+}
+
+class _MenuRow extends StatelessWidget {
+  const _MenuRow({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: <Widget>[
+        Icon(icon, size: 16, color: EditorText.secondary),
+        const SizedBox(width: EditorSpacing.sm),
+        Text(label, style: EditorText.body),
+      ],
     );
   }
 }
@@ -653,42 +923,49 @@ class _MessageBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color color = isError
-        ? EditorPalette.playhead
-        : EditorPalette.audioTrack;
+        ? EditorSurfaces.danger
+        : EditorSurfaces.success;
     return Container(
       width: double.infinity,
-      color: color.withValues(alpha: 0.14),
-      padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        border: const Border(
+          bottom: BorderSide(
+            color: EditorSurfaces.divider,
+            width: EditorStroke.hairline,
+          ),
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(
+        EditorSpacing.contentLine,
+        EditorSpacing.sm,
+        EditorSpacing.sm,
+        EditorSpacing.sm,
+      ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Icon(
             isError ? Icons.error_outline : Icons.check_circle_outline,
-            size: 14,
+            size: 15,
             color: color,
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: EditorSpacing.sm),
           Expanded(
             child: Text(
               message,
-              style: TextStyle(color: color, fontSize: 11, height: 1.35),
+              style: EditorText.body.copyWith(color: color),
             ),
           ),
           if (onRetry != null)
             TextButton(
               onPressed: onRetry,
-              style: TextButton.styleFrom(
-                foregroundColor: color,
-                visualDensity: VisualDensity.compact,
-              ),
-              child: Text(
-                retryLabel ?? '다시 시도',
-                style: const TextStyle(fontSize: 11),
-              ),
+              style: TextButton.styleFrom(foregroundColor: color),
+              child: Text(retryLabel ?? '다시 시도'),
             ),
           IconButton(
             onPressed: onClose,
-            iconSize: 14,
+            iconSize: 15,
             visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.close),
           ),
@@ -713,165 +990,153 @@ class _ExportSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final double maxHeight = MediaQuery.sizeOf(context).height * 0.86;
     return ListenableBuilder(
       listenable: controller,
       builder: (BuildContext context, Widget? child) {
         final ExportPlan? plan = controller.lastPlan;
         return SafeArea(
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.only(
+                left: EditorSpacing.contentLine,
+                right: EditorSpacing.contentLine,
+                top: EditorSpacing.lg,
+                bottom: EditorSpacing.xl,
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                const Text(
-                  '내보내기 계획',
-                  style: TextStyle(
-                    color: EditorPalette.text,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                const Text(
-                  '워터마크 없음 · 하드웨어 인코더 우선',
-                  style: TextStyle(
-                    color: EditorPalette.textMuted,
-                    fontSize: 11,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                _ExportLimitNote(
-                  state: controller.state,
-                  platform: controller.exportPlatform,
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  children: <Widget>[
-                    for (final String platform in _platforms)
-                      ChoiceChip(
-                        label: Text(platform),
-                        selected: controller.exportPlatform == platform,
-                        onSelected: (bool selected) {
-                          if (!selected) {
-                            return;
-                          }
-                          controller.setExportPlatform(platform);
-                          unawaited(controller.prepareExport());
-                        },
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                if (plan == null)
+                  const Text('내보내기 계획', style: EditorText.display),
+                  const SizedBox(height: EditorSpacing.xs),
                   const Text(
-                    '계획을 계산하는 중…',
-                    style: TextStyle(
-                      color: EditorPalette.textMuted,
-                      fontSize: 11,
-                    ),
-                  )
-                else ...<Widget>[
-                  Text(
-                    plan.summaryLabel,
-                    style: const TextStyle(
-                      color: EditorPalette.text,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+                    '워터마크 없음 · 하드웨어 인코더 우선',
+                    style: EditorText.caption,
+                  ),
+                  const SizedBox(height: EditorSpacing.md),
+                  const Divider(height: EditorStroke.hairline, thickness: 1),
+                  EditorSection(
+                    title: '플랫폼',
+                    meta: controller.exportPlatform,
+                    child: Wrap(
+                      spacing: EditorSpacing.sm,
+                      runSpacing: EditorSpacing.sm,
+                      children: <Widget>[
+                        for (final String platform in _platforms)
+                          ChoiceChip(
+                            label: Text(platform),
+                            selected: controller.exportPlatform == platform,
+                            onSelected: (bool selected) {
+                              if (!selected) {
+                                return;
+                              }
+                              controller.setExportPlatform(platform);
+                              unawaited(controller.prepareExport());
+                            },
+                          ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  for (final String note in plan.notes)
+                  EditorSection(
+                    title: '계획',
+                    meta: plan?.summaryLabel,
+                    child: plan == null
+                        ? const Text(
+                            '계획을 계산하는 중…',
+                            style: EditorText.caption,
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              for (final String note in plan.notes)
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    bottom: EditorSpacing.xs,
+                                  ),
+                                  child: Text(
+                                    '· $note',
+                                    style: EditorText.body,
+                                  ),
+                                ),
+                              if (controller.lastRenderPlan != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    top: EditorSpacing.sm,
+                                  ),
+                                  child: Text(
+                                    '렌더 그래프 · '
+                                    '${controller.lastRenderPlan!.frameCount}프레임 · '
+                                    '영상 ${controller.lastRenderPlan!.segmentCount} / '
+                                    '오디오 ${controller.lastRenderPlan!.audioSegmentCount} / '
+                                    '자막 ${controller.lastRenderPlan!.subtitleCount} · '
+                                    '${controller.lastRenderPlan!.digest}',
+                                    style: EditorText.caption,
+                                  ),
+                                ),
+                            ],
+                          ),
+                  ),
+                  _ExportLimitNote(
+                    state: controller.state,
+                    platform: controller.exportPlatform,
+                  ),
+                  if (plan != null)
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: Text(
-                        '· $note',
-                        style: const TextStyle(
-                          color: EditorPalette.textMuted,
-                          fontSize: 10,
-                          height: 1.35,
+                      padding: const EdgeInsets.only(top: EditorSpacing.lg),
+                      child: Container(
+                        width: double.infinity,
+                        constraints: const BoxConstraints(maxHeight: 110),
+                        padding: const EdgeInsets.all(EditorSpacing.md),
+                        decoration: BoxDecoration(
+                          color: EditorSurfaces.canvas,
+                          borderRadius: EditorRadius.smAll,
+                          border: Border.all(
+                            color: EditorSurfaces.divider,
+                            width: EditorStroke.hairline,
+                          ),
+                        ),
+                        child: SingleChildScrollView(
+                          child: SelectableText(
+                            plan.command,
+                            style: EditorText.mono,
+                          ),
                         ),
                       ),
                     ),
-                  const SizedBox(height: 10),
-                  if (controller.lastRenderPlan != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Text(
-                        '렌더 그래프 · ${controller.lastRenderPlan!.frameCount}프레임 · '
-                        '영상 ${controller.lastRenderPlan!.segmentCount} / 오디오 ${controller.lastRenderPlan!.audioSegmentCount} / '
-                        '자막 ${controller.lastRenderPlan!.subtitleCount} · ${controller.lastRenderPlan!.digest}',
-                        style: const TextStyle(
-                          color: EditorPalette.textMuted,
-                          fontSize: 10,
-                          height: 1.35,
-                        ),
+                  const SizedBox(height: EditorSpacing.lg),
+                  _buildProgress(context),
+                  const SizedBox(height: EditorSpacing.lg),
+                  Row(
+                    children: <Widget>[
+                      OutlinedButton(
+                        onPressed: () => unawaited(controller.prepareExport()),
+                        child: const Text('다시 계산'),
                       ),
-                    ),
-                  Container(
-                    width: double.infinity,
-                    constraints: const BoxConstraints(maxHeight: 110),
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: EditorPalette.background,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: EditorPalette.outline),
-                    ),
-                    child: SingleChildScrollView(
-                      child: SelectableText(
-                        plan.command,
-                        style: const TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 10,
-                          color: EditorPalette.textMuted,
-                          height: 1.4,
+                      const Spacer(),
+                      if (controller.exportProgress?.isRunning ?? false)
+                        OutlinedButton.icon(
+                          onPressed:
+                              (controller.exportProgress?.canCancel ?? false)
+                              ? () => unawaited(controller.cancelExport())
+                              : null,
+                          icon: const Icon(Icons.close, size: 16),
+                          label: const Text('취소'),
+                        )
+                      else
+                        FilledButton.icon(
+                          onPressed: plan == null
+                              ? null
+                              : () => unawaited(controller.startExport()),
+                          icon: const Icon(Icons.play_arrow, size: 16),
+                          label: const Text('내보내기 시작'),
                         ),
-                      ),
-                    ),
+                    ],
                   ),
                 ],
-                const SizedBox(height: 12),
-                _buildProgress(context),
-                const SizedBox(height: 12),
-                Row(
-                  children: <Widget>[
-                    OutlinedButton(
-                      onPressed: () => unawaited(controller.prepareExport()),
-                      child: const Text('다시 계산'),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '플랫폼: ${controller.exportPlatform}',
-                      style: const TextStyle(
-                        color: EditorPalette.textMuted,
-                        fontSize: 10,
-                      ),
-                    ),
-                    const Spacer(),
-                    if (controller.exportProgress?.isRunning ?? false)
-                      OutlinedButton.icon(
-                        onPressed:
-                            (controller.exportProgress?.canCancel ?? false)
-                            ? () => unawaited(controller.cancelExport())
-                            : null,
-                        icon: const Icon(Icons.close, size: 16),
-                        label: const Text('취소'),
-                      )
-                    else
-                      FilledButton.icon(
-                        onPressed: plan == null
-                            ? null
-                            : () => unawaited(controller.startExport()),
-                        icon: const Icon(Icons.play_arrow, size: 16),
-                        label: const Text('내보내기 시작'),
-                      ),
-                  ],
-                ),
-              ],
+              ),
             ),
-          ),
           ),
         );
       },
@@ -887,8 +1152,8 @@ class _ExportSheet extends StatelessWidget {
           '네이티브 미디어 엔진이 연결되지 않았습니다. docs/LOCAL_SETUP.md의 '
           '"네이티브 미디어 레이어 연결"을 참고하세요.',
           style: TextStyle(
-            color: EditorPalette.audioTrack,
-            fontSize: 10,
+            color: EditorSurfaces.success,
+            fontSize: 11,
             height: 1.4,
           ),
         );
@@ -896,10 +1161,10 @@ class _ExportSheet extends StatelessWidget {
       return const SizedBox.shrink();
     }
     final Color color = progress.state == 'failed'
-        ? EditorPalette.playhead
+        ? EditorSurfaces.danger
         : (progress.state == 'completed'
-              ? EditorPalette.audioTrack
-              : EditorPalette.accent);
+              ? EditorSurfaces.success
+              : EditorSurfaces.accent);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -908,66 +1173,38 @@ class _ExportSheet extends StatelessWidget {
             Text(
               '${progress.stateLabel} · ${progress.percent.toStringAsFixed(1)}%'
               ' (${progress.completedFrames}/${progress.totalFrames})',
-              style: TextStyle(
-                color: color,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-              ),
+              style: EditorText.bodyStrong.copyWith(color: color),
             ),
             const Spacer(),
             if (progress.etaLabel.isNotEmpty)
-              Text(
-                progress.etaLabel,
-                style: const TextStyle(
-                  color: EditorPalette.textMuted,
-                  fontSize: 10,
-                ),
-              ),
+              Text(progress.etaLabel, style: EditorText.caption),
           ],
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: EditorSpacing.sm),
         ClipRRect(
-          borderRadius: BorderRadius.circular(4),
+          borderRadius: EditorRadius.smAll,
           child: LinearProgressIndicator(
             value: progress.fraction.clamp(0.0, 1.0),
             minHeight: 6,
-            backgroundColor: EditorPalette.background,
-            valueColor: AlwaysStoppedAnimation<Color>(color),
           ),
         ),
         if (progress.error != null)
           Padding(
-            padding: const EdgeInsets.only(top: 6),
+            padding: const EdgeInsets.only(top: EditorSpacing.sm),
             child: Text(
               progress.error!,
-              style: const TextStyle(
-                color: EditorPalette.playhead,
-                fontSize: 10,
-                height: 1.35,
-              ),
+              style: EditorText.caption.copyWith(color: EditorSurfaces.danger),
             ),
           ),
         if (progress.state == 'completed') ...<Widget>[
-          const SizedBox(height: 8),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: EditorPalette.audioTrack.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              controller.exportPublished
-                  ? '저장 위치: ${controller.exportDisplayPath ?? controller.exportOutputPath ?? ''}'
-                  : '파일: ${controller.exportOutputPath ?? ''}',
-              style: const TextStyle(
-                color: EditorPalette.text,
-                fontSize: 10,
-                height: 1.35,
-              ),
-            ),
+          const SizedBox(height: EditorSpacing.md),
+          Text(
+            controller.exportPublished
+                ? '저장 위치: ${controller.exportDisplayPath ?? controller.exportOutputPath ?? ''}'
+                : '파일: ${controller.exportOutputPath ?? ''}',
+            style: EditorText.body.copyWith(color: color),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: EditorSpacing.sm),
           Row(
             children: <Widget>[
               OutlinedButton.icon(
@@ -975,7 +1212,7 @@ class _ExportSheet extends StatelessWidget {
                 icon: const Icon(Icons.share_outlined, size: 15),
                 label: const Text('공유'),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: EditorSpacing.sm),
               OutlinedButton.icon(
                 onPressed: () => unawaited(controller.openExport()),
                 icon: const Icon(Icons.play_circle_outline, size: 15),
@@ -987,13 +1224,10 @@ class _ExportSheet extends StatelessWidget {
         if (progress.state == 'failed' &&
             controller.exportOutputPath != null)
           Padding(
-            padding: const EdgeInsets.only(top: 4),
+            padding: const EdgeInsets.only(top: EditorSpacing.xs),
             child: SelectableText(
               controller.exportOutputPath!,
-              style: const TextStyle(
-                color: EditorPalette.textMuted,
-                fontSize: 10,
-              ),
+              style: EditorText.caption,
             ),
           ),
       ],
@@ -1045,28 +1279,16 @@ class _ExportLimitNote extends StatelessWidget {
         'Android 는 맨 아래 비디오 트랙을 기준으로 합성합니다(위 레이어 영상은 제외).',
       '영상·오디오 자르기/병합은 원본 화질 그대로 내보냅니다.',
     ];
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: EditorPalette.background,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: EditorPalette.outline),
-      ),
+    return EditorSection(
+      title: '제한 사항',
+      meta: platform,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           for (final String note in notes)
             Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text(
-                '· $note',
-                style: const TextStyle(
-                  color: EditorPalette.textMuted,
-                  fontSize: 9.5,
-                  height: 1.35,
-                ),
-              ),
+              padding: const EdgeInsets.only(bottom: EditorSpacing.xs),
+              child: Text('· $note', style: EditorText.caption),
             ),
         ],
       ),
@@ -1092,58 +1314,58 @@ class _StartView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool compact =
+        MediaQuery.sizeOf(context).width < EditorBreakpoints.compact;
     return Center(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        padding: const EdgeInsets.symmetric(
+          horizontal: EditorSpacing.xl,
+          vertical: EditorSpacing.lg,
+        ),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: EditorPalette.accent.withValues(alpha: 0.16),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Icon(
-                  Icons.movie_filter_outlined,
-                  color: EditorPalette.accent,
-                  size: 30,
+              Center(
+                child: Container(
+                  width: 52,
+                  height: 52,
+                  decoration: const BoxDecoration(
+                    color: EditorSurfaces.accentSoft,
+                    borderRadius: EditorRadius.mdAll,
+                  ),
+                  child: const Icon(
+                    Icons.movie_filter_outlined,
+                    color: EditorText.primary,
+                    size: 28,
+                  ),
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: EditorSpacing.lg),
               const Text(
                 '새 프로젝트가 준비됐어요',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: EditorPalette.text,
-                  fontSize: 17,
-                  fontWeight: FontWeight.w700,
-                ),
+                style: EditorText.display,
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: EditorSpacing.sm),
               const Text(
                 '영상을 고르면 길이·해상도를 읽어 타임라인에 놓습니다.\n'
                 '자르고, 자막을 얹고, 워터마크 없이 내보내세요.',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: EditorPalette.textMuted,
-                  fontSize: 11,
-                  height: 1.5,
-                ),
+                style: EditorText.body,
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: EditorSpacing.xl),
               FilledButton.icon(
                 onPressed: onAddMedia,
                 icon: const Icon(Icons.video_call_outlined, size: 18),
                 label: const Text('영상 · 사진 추가'),
                 style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(44),
+                  minimumSize: Size.fromHeight(compact ? 48 : 44),
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: EditorSpacing.sm),
               Row(
                 children: <Widget>[
                   Expanded(
@@ -1151,27 +1373,38 @@ class _StartView extends StatelessWidget {
                       onPressed: onAddText,
                       icon: const Icon(Icons.title, size: 16),
                       label: const Text('텍스트'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: Size(0, compact ? 48 : 36),
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: EditorSpacing.sm),
                   Expanded(
                     child: OutlinedButton.icon(
                       onPressed: onAddSubtitle,
                       icon: const Icon(Icons.subtitles_outlined, size: 16),
                       label: const Text('자막'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: Size(0, compact ? 48 : 36),
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: EditorSpacing.sm),
                   Expanded(
                     child: OutlinedButton.icon(
                       onPressed: onExport,
                       icon: const Icon(Icons.ios_share, size: 16),
                       label: const Text('내보내기'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: Size(0, compact ? 48 : 36),
+                      ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: EditorSpacing.lg),
+              const Divider(height: EditorStroke.hairline, thickness: 1),
+              const SizedBox(height: EditorSpacing.md),
               const _StepHints(),
             ],
           ),
@@ -1198,37 +1431,28 @@ class _StepHints extends StatelessWidget {
       children: <Widget>[
         for (final (String number, String text) in _steps)
           Padding(
-            padding: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.only(bottom: EditorSpacing.sm),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Container(
-                  width: 16,
-                  height: 16,
+                  width: 18,
+                  height: 18,
                   alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: EditorPalette.surfaceHigh,
-                    borderRadius: BorderRadius.circular(4),
+                  decoration: const BoxDecoration(
+                    color: EditorSurfaces.raised,
+                    borderRadius: EditorRadius.smAll,
                   ),
                   child: Text(
                     number,
-                    style: const TextStyle(
-                      color: EditorPalette.textMuted,
-                      fontSize: 9,
+                    style: EditorText.caption.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: EditorSpacing.sm),
                 Expanded(
-                  child: Text(
-                    text,
-                    style: const TextStyle(
-                      color: EditorPalette.textMuted,
-                      fontSize: 10,
-                      height: 1.4,
-                    ),
-                  ),
+                  child: Text(text, style: EditorText.caption),
                 ),
               ],
             ),
@@ -1260,22 +1484,24 @@ class _SubtitlesSheet extends StatelessWidget {
           child: ConstrainedBox(
             constraints: BoxConstraints(maxHeight: maxHeight),
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
+              padding: const EdgeInsets.only(
+                left: EditorSpacing.contentLine,
+                right: EditorSpacing.contentLine,
+                top: EditorSpacing.lg,
+                bottom: EditorSpacing.lg,
+              ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Row(
                     children: <Widget>[
-                      Text(
-                        '자막 ${subtitles.length}개',
-                        style: const TextStyle(
-                          color: EditorPalette.text,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
+                      Expanded(
+                        child: Text(
+                          '자막 ${subtitles.length}개',
+                          style: EditorText.display,
                         ),
                       ),
-                      const Spacer(),
                       FilledButton.icon(
                         onPressed: () async {
                           final String? text = await showDialog<String>(
@@ -1292,25 +1518,19 @@ class _SubtitlesSheet extends StatelessWidget {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: EditorSpacing.xs),
                   const Text(
                     '자막은 재생 헤드 시각부터 2초로 추가됩니다. 문구/구간은 목록에서 고칠 수 있습니다.',
-                    style: TextStyle(
-                      color: EditorPalette.textMuted,
-                      fontSize: 10,
-                      height: 1.4,
-                    ),
+                    style: EditorText.caption,
                   ),
-                  const SizedBox(height: 10),
+                  const SizedBox(height: EditorSpacing.md),
+                  const Divider(height: EditorStroke.hairline, thickness: 1),
                   if (subtitles.isEmpty)
                     const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 18),
+                      padding: EdgeInsets.symmetric(vertical: EditorSpacing.xl),
                       child: Text(
                         '아직 자막이 없습니다. 재생 헤드를 원하는 위치로 옮긴 뒤 추가해 보세요.',
-                        style: TextStyle(
-                          color: EditorPalette.textMuted,
-                          fontSize: 11,
-                        ),
+                        style: EditorText.body,
                       ),
                     )
                   else
@@ -1319,28 +1539,16 @@ class _SubtitlesSheet extends StatelessWidget {
                         shrinkWrap: true,
                         itemCount: subtitles.length,
                         separatorBuilder: (BuildContext context, int index) =>
-                            const Divider(
-                              height: 1,
-                              color: EditorPalette.outline,
-                            ),
+                            const Divider(height: EditorStroke.hairline),
                         itemBuilder: (BuildContext context, int index) {
                           final SubtitleView item = subtitles[index];
                           return ListTile(
                             dense: true,
                             contentPadding: EdgeInsets.zero,
-                            title: Text(
-                              item.text,
-                              style: const TextStyle(
-                                color: EditorPalette.text,
-                                fontSize: 12,
-                              ),
-                            ),
+                            title: Text(item.text, style: EditorText.bodyStrong),
                             subtitle: Text(
                               '${formatTimecode(item.startMs)} → ${formatTimecode(item.endMs)}',
-                              style: const TextStyle(
-                                color: EditorPalette.textMuted,
-                                fontSize: 10,
-                              ),
+                              style: EditorText.caption,
                             ),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
@@ -1438,7 +1646,6 @@ class _SubtitleEditorDialogState extends State<_SubtitleEditorDialog> {
   Widget build(BuildContext context) {
     final bool editing = widget.item != null;
     return AlertDialog(
-      backgroundColor: EditorPalette.surface,
       title: Text(editing ? '자막 수정' : '자막 추가'),
       content: SingleChildScrollView(
         child: Column(
@@ -1454,7 +1661,7 @@ class _SubtitleEditorDialogState extends State<_SubtitleEditorDialog> {
               onSubmitted: (_) => _submit(context),
             ),
             if (editing) ...<Widget>[
-              const SizedBox(height: 8),
+              const SizedBox(height: EditorSpacing.sm),
               Row(
                 children: <Widget>[
                   Expanded(
@@ -1464,7 +1671,7 @@ class _SubtitleEditorDialogState extends State<_SubtitleEditorDialog> {
                       decoration: const InputDecoration(labelText: '시작(초)'),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: EditorSpacing.md),
                   Expanded(
                     child: TextField(
                       controller: _end,

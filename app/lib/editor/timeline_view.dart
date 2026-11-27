@@ -371,13 +371,18 @@ class _TimelineViewState extends State<TimelineView> {
 
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
+        // 좁은(터치) 화면에서는 타임라인 툴바도 48dp 타깃을 확보한다.
+        final bool touch = constraints.maxWidth < EditorBreakpoints.compact;
+        final double toolbarHeight = touch
+            ? EditorDensity.touch.minTarget
+            : _toolbarHeight;
         final double contentHeight =
             _rulerHeight +
             state.tracks.length * (_rowHeight + _rowGap) +
             _subtitleLaneHeight +
             10;
         final double viewportHeight = math.max(
-          constraints.maxHeight - _toolbarHeight,
+          constraints.maxHeight - toolbarHeight,
           60,
         );
         final double canvasHeight = math.max(contentHeight, viewportHeight);
@@ -434,6 +439,8 @@ class _TimelineViewState extends State<TimelineView> {
         return Column(
           children: <Widget>[
             _ZoomBar(
+              height: toolbarHeight,
+              touch: touch,
               zoom: _zoom,
               onZoomIn: () => _applyZoom(_zoom * 1.5),
               onZoomOut: () => _applyZoom(_zoom / 1.5),
@@ -522,12 +529,16 @@ class TimelineDragPreview {
 /// 줌 버튼 막대(작게, 타임라인 위).
 class _ZoomBar extends StatelessWidget {
   const _ZoomBar({
+    required this.height,
+    required this.touch,
     required this.zoom,
     required this.onZoomIn,
     required this.onZoomOut,
     required this.onFit,
   });
 
+  final double height;
+  final bool touch;
   final double zoom;
   final VoidCallback onZoomIn;
   final VoidCallback onZoomOut;
@@ -536,32 +547,44 @@ class _ZoomBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: _toolbarHeight,
+      height: height,
       child: Row(
         children: <Widget>[
-          const SizedBox(width: 4),
-          _MiniButton(icon: Icons.zoom_out, tooltip: '축소', onTap: onZoomOut),
-          _MiniButton(icon: Icons.zoom_in, tooltip: '확대', onTap: onZoomIn),
+          const SizedBox(width: EditorSpacing.xs),
+          _MiniButton(
+            icon: Icons.zoom_out,
+            tooltip: '축소',
+            onTap: onZoomOut,
+            touch: touch,
+          ),
+          _MiniButton(
+            icon: Icons.zoom_in,
+            tooltip: '확대',
+            onTap: onZoomIn,
+            touch: touch,
+          ),
           _MiniButton(
             icon: Icons.fit_screen_outlined,
             tooltip: '전체 맞춤',
             onTap: onFit,
+            touch: touch,
           ),
-          const SizedBox(width: 6),
+          const SizedBox(width: EditorSpacing.sm),
           Text(
             '${zoom.toStringAsFixed(1)}x',
-            style: const TextStyle(
-              color: EditorPalette.textMuted,
-              fontSize: 10,
-              fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
-            ),
+            style: EditorText.numeric.copyWith(fontSize: 10),
           ),
           const Spacer(),
-          const Text(
-            '클립 드래그: 이동 · 끝 잡기: 자르기',
-            style: TextStyle(color: EditorPalette.textMuted, fontSize: 9),
-          ),
-          const SizedBox(width: 8),
+          if (!touch)
+            const Flexible(
+              child: Text(
+                '클립 드래그: 이동 · 끝 잡기: 자르기',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: EditorText.caption,
+              ),
+            ),
+          const SizedBox(width: EditorSpacing.sm),
         ],
       ),
     );
@@ -573,22 +596,32 @@ class _MiniButton extends StatelessWidget {
     required this.icon,
     required this.tooltip,
     required this.onTap,
+    required this.touch,
   });
 
   final IconData icon;
   final String tooltip;
   final VoidCallback onTap;
+  final bool touch;
 
   @override
   Widget build(BuildContext context) {
+    final double target = touch
+        ? EditorDensity.touch.minTarget
+        : EditorDensity.compact.minTarget;
     return Tooltip(
       message: tooltip,
       child: InkWell(
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: EditorRadius.smAll,
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          child: Icon(icon, size: 16, color: EditorPalette.textMuted),
+        child: SizedBox(
+          width: target,
+          height: target,
+          child: Icon(
+            icon,
+            size: touch ? 20 : 16,
+            color: EditorText.secondary,
+          ),
         ),
       ),
     );

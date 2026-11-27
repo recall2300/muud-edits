@@ -28,27 +28,34 @@ class PreviewPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final EditorState? state = controller.state;
     if (state == null) {
-      return const Center(
-        child: Text(
-          '프로젝트가 없습니다',
-          style: TextStyle(color: EditorPalette.textMuted),
-        ),
+      return Center(
+        child: Text('프로젝트가 없습니다', style: EditorText.body),
       );
     }
 
+    // 캔버스는 카드가 아니라 작업면이다. 1px 테두리와 낮은 반경만 남기고
+    // 주변은 content line 에 맞춘 여백으로 비운다(영상 색 판단을 방해하지 않게).
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+      padding: const EdgeInsets.fromLTRB(
+        EditorSpacing.contentLine,
+        EditorSpacing.md,
+        EditorSpacing.contentLine,
+        EditorSpacing.sm,
+      ),
       child: Center(
         child: AspectRatio(
           aspectRatio: state.aspectRatio,
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: const Color(0xFF07070A),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: EditorPalette.outline),
+              borderRadius: EditorRadius.mdAll,
+              border: Border.all(
+                color: EditorSurfaces.divider,
+                width: EditorStroke.hairline,
+              ),
             ),
             child: ClipRRect(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: EditorRadius.mdAll,
               child: Stack(
                 fit: StackFit.expand,
                 children: <Widget>[
@@ -59,20 +66,20 @@ class PreviewPanel extends StatelessWidget {
                         _OverlayLayer(state: state, playheadMs: playhead),
                   ),
                   Positioned(
-                    right: 10,
-                    top: 8,
+                    right: EditorSpacing.sm,
+                    top: EditorSpacing.sm,
                     child: _Badge(
                       text: '${state.width}x${state.height} · ${state.fps}fps',
                     ),
                   ),
                   if (engine.error != null)
                     Positioned(
-                      left: 10,
-                      right: 10,
-                      bottom: 8,
+                      left: EditorSpacing.sm,
+                      right: EditorSpacing.sm,
+                      bottom: EditorSpacing.sm,
                       child: _Notice(
                         icon: Icons.error_outline,
-                        color: EditorPalette.playhead,
+                        color: EditorSurfaces.danger,
                         text: engine.error!,
                       ),
                     ),
@@ -131,7 +138,7 @@ class _OverlayLayer extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
                 color: Colors.black.withValues(alpha: 0.55),
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: EditorRadius.smAll,
               ),
               child: Text(
                 subtitle,
@@ -249,18 +256,14 @@ class _GapSlot extends StatelessWidget {
             children: <Widget>[
               Icon(
                 icon,
-                size: 30,
-                color: EditorPalette.textMuted.withValues(alpha: 0.5),
+                size: 28,
+                color: EditorText.tertiary.withValues(alpha: 0.6),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: EditorSpacing.sm),
               Text(
                 title,
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: EditorPalette.textMuted.withValues(alpha: 0.8),
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: EditorText.body.copyWith(color: EditorText.secondary),
               ),
             ],
           ),
@@ -287,7 +290,7 @@ class _Notice extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.62),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: EditorRadius.smAll,
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -299,7 +302,7 @@ class _Notice extends StatelessWidget {
               text,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: color, fontSize: 9.5, height: 1.3),
+              style: TextStyle(color: color, fontSize: 11, height: 1.35),
             ),
           ),
         ],
@@ -318,16 +321,12 @@ class _Badge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.45),
-        borderRadius: BorderRadius.circular(4),
+        color: Colors.black.withValues(alpha: 0.5),
+        borderRadius: EditorRadius.smAll,
       ),
       child: Text(
         text,
-        style: const TextStyle(
-          color: EditorPalette.text,
-          fontSize: 9,
-          fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
-        ),
+        style: EditorText.numeric.copyWith(fontSize: 10, color: EditorText.secondary),
       ),
     );
   }
