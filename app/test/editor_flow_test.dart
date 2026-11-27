@@ -317,4 +317,34 @@ void main() {
     // 예전에 사용자가 본 개발자용 안내가 다시 나오면 안 된다.
     expect(find.textContaining('UnimplementedError'), findsNothing);
   });
+
+  testWidgets('인스펙터에서 텍스트 클립 문구를 바로 고칠 수 있다', (
+    WidgetTester tester,
+  ) async {
+    final EditorController controller = await _pumpEditor(tester);
+    await controller.addTextOverlay('처음 문구');
+    await tester.pumpAndSettle();
+
+    // 텍스트 클립은 오버레이 트랙에 놓인다.
+    final ClipView textClip = controller.state!.tracks
+        .firstWhere((TrackView track) => track.kind == 'overlay')
+        .clips
+        .first;
+    controller.selectClip(textClip.id);
+    await tester.pumpAndSettle();
+
+    expect(find.text('문구 수정'), findsOneWidget);
+    final Finder field = find.widgetWithText(TextField, '처음 문구');
+    expect(field, findsOneWidget);
+
+    await tester.enterText(field, '고친 문구');
+    await tester.tap(find.widgetWithText(FilledButton, '적용'));
+    await tester.pumpAndSettle();
+
+    final ClipView updated = controller.state!.tracks
+        .firstWhere((TrackView track) => track.kind == 'overlay')
+        .clips
+        .first;
+    expect(updated.textContent, '고친 문구');
+  });
 }

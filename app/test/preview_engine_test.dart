@@ -857,4 +857,191 @@ void main() {
       expect(find.text('이 구간에는 영상이 없습니다'), findsOneWidget);
     });
   });
+
+  // v0.1.6 회귀: 트림 클립 첫 시크, 오버레이 아래 영상 소리, 빈 구간 플레이어 유지
+  group('미리보기 회귀(v0.1.6)', () {
+    test('위 레이어 이미지가 있어도 아래 영상 트랙의 소리를 유지한다', () {
+      final EditorState state = _state(<TrackView>[
+        _track('video', <ClipView>[
+          _clip(id: 'v1', path: '/a.mp4', startMs: 0, endMs: 4000),
+        ]),
+        _track('overlay', <ClipView>[
+          _clip(id: 'i1', path: '/photo.png', kind: 'image'),
+        ]),
+      ]);
+
+      final PreviewSelection sel = resolvePreviewSelection(state, 1000);
+      expect(sel.visualClip?.id, 'i1');
+      expect(sel.audioClip?.id, 'v1', reason: '아래 영상의 오디오가 살아 있어야 한다');
+      expect(sel.audioFromVideoTrack, isTrue);
+    });
+
+    test('볼륨 2.0은 미리보기에서 1.0으로 제한한다', () {
+      final EditorState state = _state(<TrackView>[
+        _track('video', <ClipView>[
+          _clip(id: 'v1', path: '/a.mp4', volume: 2.0),
+        ]),
+      ]);
+      expect(resolvePreviewSelection(state, 100).volume, previewVolumeCeiling);
+    });
+
+    test('트림 클립의 첫 시크 직후 0 보고를 무시한다', () {
+      fakeAsync((FakeAsync async) {
+        int now = 0;
+        final EditorController controller = EditorController(
+          bridge: FakeCoreBridge(),
+          media: FakeMediaPlatformBridge(),
+        );
+        controller.bootstrap();
+        async.flushMicrotasks();
+        controller.addMediaClip(
+          sourcePath: '/trim.mp4',
+          kind: 'video',
+          startMs: 1000,
+          endMs: 5000,
+          sourceDurationMs: 5000,
+        );
+        async.flushMicrotasks();
+
+        final StaleSeekFactory factory = StaleSeekFactory(clockMs: () => now);
+        final PreviewEngine engine = PreviewEngine(
+          controller: controller,
+          mediaFactory: factory,
+          clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
+        );
+        addTearDown(engine.dispose);
+        addTearDown(controller.dispose);
+
+        // 인점(1000ms) 안쪽에서 재생을 시작한다.
+        controller.setPlayhead(1400);
+        async.elapse(const Duration(milliseconds: 40));
+        async.flushMicrotasks();
+
+        engine.play();
+        async.flushMicrotasks();
+        final StaleSeekMedia media = factory.last!;
+        expect(media.seekCount, greaterThanOrEqualTo(0));
+
+        // 플랫폼은 아직 0을 보고한다(시크 완료 전).
+        now += 100;
+        async.elapse(const Duration(milliseconds: 20));
+        now += 100;
+        async.elapse(const Duration(milliseconds: 20));
+
+        // 0ms 로 되감기거나 멈추지 않고, 벽시계로 계속 흘러야 한다.
+        expect(engine.positionMs, greaterThanOrEqualTo(1400));
+
+        // 시크가 끝나 실제 위치를 보고하면 그때부터 플레이어가 시계가 된다.
+        media.arrive = true;
+        now += 300;
+        async.elapse(const Duration(milliseconds: 20));
+        expect(engine.positionMs, greaterThanOrEqualTo(1400));
+      });
+    });
+
+    test('빈 구간에 들어가도 플레이어를 버리지 않고, 돌아오면 다시 열지 않는다', () {
+      fakeAsync((FakeAsync async) {
+        int now = 0;
+        final EditorController controller = EditorController(
+          bridge: FakeCoreBridge(),
+          media: FakeMediaPlatformBridge(),
+        );
+        controller.bootstrap();
+        async.flushMicrotasks();
+        controller.addMediaClip(
+          sourcePath: '/a.mp4',
+          kind: 'video',
+          startMs: 0,
+          endMs: 1000,
+          sourceDurationMs: 1000,
+        );
+        async.flushMicrotasks();
+        // 1초 클립 뒤에 2초 빈 구간을 두고 두 번째 클립을 놓는다.
+        controller.addMediaClip(
+          sourcePath: '/b.mp4',
+          kind: 'video',
+          startMs: 0,
+          endMs: 1000,
+          atMs: 3000,
+          sourceDurationMs: 1000,
+        );
+        async.flushMicrotasks();
+
+        final FakePreviewMediaFactory factory = FakePreviewMediaFactory(
+          clockMs: () => now,
+        );
+        final PreviewEngine engine = PreviewEngine(
+          controller: controller,
+          mediaFactory: factory,
+          clockMs: () => now,
+          tickInterval: const Duration(milliseconds: 20),
+        );
+        addTearDown(engine.dispose);
+        addTearDown(controller.dispose);
+
+        controller.setPlayhead(900);
+        async.elapse(const Duration(milliseconds: 40));
+        async.flushMicrotasks();
+        final FakePreviewMedia first = factory.media['/a.mp4']!;
+
+        engine.play();
+        async.flushMicrotasks();
+        now += 200; // 빈 구간으로 들어간다.
+        async.elapse(const Duration(milliseconds: 20));
+        async.elapse(const Duration(milliseconds: 20));
+
+        expect(engine.selection.isGap, isTrue);
+        expect(first.disposed, isFalse, reason: '빈 구간에서 플레이어를 버리지 않는다');
+        expect(engine.surface, isNull, reason: '빈 구간은 검은 화면이어야 한다');
+        expect(first.playing, isFalse);
+
+        // 앞 클립으로 되돌아가면 같은 컨트롤러를 다시 쓴다(새로 열지 않는다).
+        engine.pause();
+        async.flushMicrotasks();
+        controller.setPlayhead(500);
+        async.elapse(const Duration(milliseconds: 40));
+        async.flushMicrotasks();
+        expect(factory.opened.where((String p) => p == '/a.mp4').length, 1);
+      });
+    });
+  });
+}
+
+/// 시크 직후 일정 시간 동안 0을 보고하는 가짜 미디어(플랫폼 지연 흉내).
+class StaleSeekMedia extends FakePreviewMedia {
+  StaleSeekMedia(super.path, {super.clockMs});
+
+  int? _target;
+  bool arrive = false;
+
+  @override
+  int get positionMs {
+    if (_target != null && !arrive) {
+      return 0; // 시크는 받았지만 아직 위치가 갱신되지 않았다.
+    }
+    return super.positionMs;
+  }
+
+  @override
+  Future<void> seekTo(int sourceMs) async {
+    await super.seekTo(sourceMs);
+    _target = sourceMs;
+  }
+}
+
+class StaleSeekFactory implements PreviewMediaFactory {
+  StaleSeekFactory({this.clockMs});
+
+  final int Function()? clockMs;
+  StaleSeekMedia? last;
+  final List<String> opened = <String>[];
+
+  @override
+  Future<PreviewMedia> open(String path, {required bool wantVideo}) async {
+    opened.add(path);
+    final StaleSeekMedia media = StaleSeekMedia(path, clockMs: clockMs);
+    last = media;
+    return media;
+  }
 }

@@ -124,6 +124,14 @@ class FakeCoreBridge implements CoreBridge {
           (command['text'] as Map?)?['content']?.toString() ?? '',
         );
         return _envelope();
+      case 'move_clip':
+        _push('클립 이동');
+        _moveClip('${command['track_id']}', command);
+        return _envelope();
+      case 'set_track_state':
+        _push('트랙 상태');
+        _setTrackState('${command['track_id']}', command);
+        return _envelope();
       case 'update_subtitle':
         _push('자막 수정');
         _updateSubtitle(
@@ -519,8 +527,7 @@ class FakeCoreBridge implements CoreBridge {
     }
   }
 
-  void _trimClip(String trackId, String clipId, Map<dynamic, dynamic> command) {
-    final Map<String, dynamic> track = _trackById(trackId);
+  void _trimClip(String trackId, String clipId, Map<dynamic, dynamic> command) {    final Map<String, dynamic> track = _trackById(trackId);
     for (final dynamic raw in (track['clips'] as List)) {
       final Map<String, dynamic> clip = (raw as Map).cast<String, dynamic>();
       if (clip['id'] != clipId) {
@@ -536,6 +543,40 @@ class FakeCoreBridge implements CoreBridge {
         clip['timeline_offset_ms'] = (command['timeline_offset_ms'] as num).toInt();
       }
       return;
+    }
+  }
+
+  /// 클립 이동(타임라인 위치 변경). 코어의 `move_clip` 최소 동작.
+  void _moveClip(String trackId, Map<dynamic, dynamic> command) {
+    final String clipId = '${command['clip_id']}';
+    final String targetTrackId =
+        '${command['to_track_id'] ?? command['track_id']}';
+    final int offset = (command['timeline_offset_ms'] as num?)?.toInt() ?? 0;
+    final Map<String, dynamic> track = _trackById(trackId);
+    final List<dynamic> clips = track['clips'] as List;
+    int index = -1;
+    for (int i = 0; i < clips.length; i++) {
+      if ((clips[i] as Map)['id'] == clipId) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0) {
+      throw BridgeException('not_found', '클립을 찾지 못했습니다: $clipId');
+    }
+    final Map<String, dynamic> moving =
+        (clips.removeAt(index) as Map).cast<String, dynamic>();
+    moving['timeline_offset_ms'] = offset;
+    _addClip(targetTrackId, moving);
+  }
+
+  /// 트랙 상태(음소거/숨김/잠금).
+  void _setTrackState(String trackId, Map<dynamic, dynamic> command) {
+    final Map<String, dynamic> track = _trackById(trackId);
+    for (final String key in <String>['muted', 'hidden', 'locked']) {
+      if (command[key] != null) {
+        track[key] = command[key] == true;
+      }
     }
   }
 
