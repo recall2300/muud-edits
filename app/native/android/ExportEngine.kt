@@ -9,11 +9,11 @@ import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
 import androidx.annotation.OptIn
-import androidx.media3.common.AudioFormat
 import androidx.media3.common.C
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.AudioProcessor.AudioFormat
 import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
@@ -72,8 +72,8 @@ class ExportEngine(private val context: Context) {
         canceled = false
         return try {
             val graph = JSONObject(graphJson)
-            validate(graph)
             totalFrames = graph.optInt("frame_count", 0)
+            validate(graph)
             emit(mapOf("event" to "stage", "state" to "preparing"))
 
             val composition = buildComposition(graph)
