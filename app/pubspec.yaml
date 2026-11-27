@@ -1,7 +1,7 @@
 name: muud_edits
 description: 오픈소스 크로스플랫폼 숏폼 영상 편집기 (Flutter UI + Rust 코어)
 publish_to: "none"
-version: 0.1.6+7
+version: 0.1.7+8
 
 environment:
   # file_picker 13.x 가 Flutter 3.38+/Dart 3.10+ 를 요구한다.

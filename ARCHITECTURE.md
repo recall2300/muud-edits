@@ -304,7 +304,71 @@ Flutter 앱 UI 는 그대로이고(Impeller opt-out 은 3.38+ 에서 deprecated 
 
 ---
 
-## 8. 내보내기 파이프라인 ✅(계획·그래프) / ✅(네이티브 1차 구현) / 🔜(기기 검증)
+## 8. UI/UX — Astryx 토큰과 작업 공간 (v0.1.7)
+
+v0.1.7은 외부 디자인 패키지를 넣지 않고, **메타 Astryx 의 레이아웃 원칙과
+시맨틱 토큰을 Flutter 기본 위젯 위에 직접 구현**했다. 규칙은 세 가지다.
+
+1. **토큰 → 컴포넌트 2계층**: 원시 색(`EditorPalette`) 위에 시맨틱 토큰
+   (`EditorSpacing` · `EditorRadius` · `EditorStroke` · `EditorText` ·
+   `EditorSurfaces` · `EditorBreakpoints` · `EditorDensity`)을 두고, 위젯은
+   가능한 한 시맨틱 토큰만 읽는다. 화면 코드에서 새 색을 만들지 않는다.
+2. **Outside-in 작업 공간**: 브레이크포인트 계약을 코드·주석·테스트가 같은
+   값으로 공유한다(`EditorBreakpoints`).
+3. **카드 중첩 금지**: `EditorSection` + 1px `Divider` + 하나의 content line
+   (`EditorSpacing.contentLine = 16`)으로 구획한다. 영역마다 lead(제목) 하나와
+   primary action 하나만 강조한다.
+
+### 8.1 토큰
+
+| 토큰 | 값/의미 |
+|---|---|
+| `EditorSpacing` | 4px 기반 `xxs 2 · xs 4 · sm 8 · md 12 · lg 16 · xl 24 · xxl 32`, content line = 16 |
+| `EditorRadius` | `sm 6 · md 10 · lg 14 · pill` — 컨테이너 중첩을 줄였으므로 큰 반경은 시트/캔버스에만 |
+| `EditorStroke.hairline` | 1px — 카드 테두리 대신 영역 경계 |
+| `EditorText` | `display 17/700 · lead 15/700 · section 12/700 · body 12.5/400 · bodyStrong 12.5/600 · label 11/600 · caption 11/400 · numeric · mono` |
+| `EditorText.primary/secondary/tertiary` | `#F2F3F7 → #C3C8D6 → #9AA1B4`. 읽어야 하는 보조 정보는 secondary, 곁다리(타임코드·개수)만 tertiary |
+| `EditorSurfaces` | `canvas #0E0F13 → panel #16181F → raised #1E2129 → overlay #242835` (4계층 고정) |
+| `EditorDensity` | touch(48dp 최소 타깃, 아이콘 22) / compact(32dp, 아이콘 18). `forWidth` 로 폭에 따라 결정 |
+| `EditorBreakpoints` | `< 768` compact, `768~1023` medium, `>= 1024` wide |
+
+텍스트 위계는 **크기를 줄이지 않고 weight 와 농도로** 구분한다(예전처럼 9~10px
+흐린 회색을 남발하지 않는다). 본문 계열은 11px 아래로 내리지 않으며, secondary
+텍스트는 패널 대비 7:1, tertiary 도 4.5:1(WCAG AA)을 넘는다 — `theme_tokens_test` 가 검증한다.
+
+### 8.2 작업 공간(`lib/editor/workspace.dart`)
+
+| 폭 | 배치 | 인스펙터 |
+|---|---|---|
+| `>= 1024` (wide) | 상단 바 / [미리보기 │ 인스펙터] / 트랜스포트 / 타임라인 | 사이드 패널 상시. 경계 드래그로 폭 280~480 조절 |
+| `768~1023` (medium) | 2영역 유지 | 클립을 선택했을 때만 축소 폭(240~340) 패널이 붙는다 |
+| `< 768` (compact) | 미리보기 → 트랜스포트 → 타임라인 → 하단 시트 | 하단 BottomSheet 로 스왑. 타임라인은 시트 위에 남아 자르는 동안 위치가 보인다 |
+
+* **ResizeHandle**: 시각은 1px 선, 잡는 영역은 10dp, 포인터 커서는
+  `resizeColumn/resizeRow`. 인스펙터 경계(좌우)와 타임라인 경계(상하) 두 곳.
+  값은 위젯 상태로만 두고 매 드래그 프레임에서 경계만 다시 그린다.
+* **상단 바**: 프로젝트 이름(lead) 하나, 실행 취소/다시 실행, 그리고
+  **단 하나의 primary action(내보내기)**. 새 프로젝트·열기·저장은 "프로젝트 메뉴"로 내렸다.
+* **인스펙터**(`inspector_panel.dart`): lead "인스펙터" + 구획
+  `문구|자르기 → 조정 → 구간(읽기 전용)`. 편집 항목을 먼저, 읽기용 정보를 마지막에 둔다.
+  선택이 없으면 `InspectorEmptyState` 가 스크롤 안에서 정렬되어 좁고 낮은 패널에서도 넘치지 않는다.
+* **터치 타깃**: compact 에서 재생/프레임 이동/분할/오버플로 메뉴/타임라인 줌 버튼이
+  모두 48dp. 데스크톱은 compact 밀도(32dp)로 정보를 더 담는다.
+
+### 8.3 회귀 방지
+
+v0.1.6 의 기능(내보내기·미리보기 0ms 튐·오버레이 아래 오디오·타임라인 핀치 줌/
+드래그 이동·트림·트랙 토글·인스펙터 텍스트 편집·`publishProject`)은 위젯/단위
+테스트로 그대로 지킨다. v0.1.7 에서 추가한 테스트:
+
+* `theme_tokens_test.dart` — 간격/반경 스케일, 텍스트 위계·대비, 브레이크포인트·밀도 계약
+* `editor_layout_test.dart` — wide/medium/compact 배치, 인스펙터·타임라인 리사이즈 드래그,
+  하단 시트 열림/닫힘·높이 드래그, 48dp 터치 타깃
+* `inspector_panel_test.dart` — EmptyState 무손상, Section/Divider 구획, 텍스트 클립 문구 우선 배치
+
+---
+
+## 9. 내보내기 파이프라인 ✅(계획·그래프) / ✅(네이티브 1차 구현) / 🔜(기기 검증)
 
 `rust_core/src/export.rs`는 "무엇으로 어떻게 인코딩할지"를 결정하고 검증한다.
 
@@ -316,7 +380,7 @@ ExportSettings { resolution, fps, bitrate, gop, codec, audio, container, hardwar
    └ plan() → ExportPlan { encoder, ffmpeg_args, notes, summary }
 ```
 
-### 8.1 결정적 렌더 그래프 (`render_plan.rs`) — 코어와 네이티브의 계약
+### 9.1 결정적 렌더 그래프 (`render_plan.rs`) — 코어와 네이티브의 계약
 
 내보내기 실행의 입력은 `ExportPlan`이 아니라 **`RenderGraph`**다. 코어가 타임라인을
 "렌더러가 그대로 소비하는 계획"으로 컴파일한다.
@@ -341,7 +405,7 @@ Project + ExportSettings + Platform
 * **합성 계약**: `layer` 오름차순, `opacity_curve` 선형 보간, 오디오는 전 구간 합산,
   자막은 `enabled`일 때 번인. 네이티브 엔진은 이 계약만 구현하면 4플랫폼이 같은 결과를 낸다.
 
-### 8.2 진행률과 취소 (`progress.rs`)
+### 9.2 진행률과 취소 (`progress.rs`)
 
 플랫폼 이벤트(AVAssetExportSession progress, Media3 progress, ffmpeg `frame=`)를
 하나의 상태 기계로 정규화한다.
@@ -357,7 +421,7 @@ Queued → Preparing → Rendering → Finalizing → Completed
 * `ExportProgress`는 `fraction/percent/eta_ms/state_label`을 계산해 UI가 그대로 쓴다.
 * 진행률 단위가 다른 플랫폼(0~1, 프레임 수, ffmpeg 라인)을 `completed_frames`로 통일한다.
 
-### 8.3 실행 경로
+### 9.3 실행 경로
 
 | 경로 | 언제 | 방법 |
 |---|---|---|
@@ -366,7 +430,7 @@ Queued → Preparing → Rendering → Finalizing → Completed
 
 네이티브 구현 위치와 세부 한계는 `app/native/README.md`에, 연결 방법은 `docs/LOCAL_SETUP.md`에 있다.
 
-#### 8.3.1 빈 구간·배속·오디오 위치 (v0.1.6)
+#### 9.3.1 빈 구간·배속·오디오 위치 (v0.1.6)
 
 세그먼트 사이에 빈 구간이 있으면 **렌더러가 그 길이를 채워야** 영상·자막·오디오가
 어긋나지 않는다. v0.1.6에서 두 네이티브 경로를 이 규칙으로 맞췄다.
@@ -391,7 +455,7 @@ Android 는 이번 버전에서 **사진 클립**(`MediaItem.setImageDurationMs`
 
 ---
 
-## 9. 플랫폼별 빌드 & 하드웨어 코덱 전략
+## 10. 플랫폼별 빌드 & 하드웨어 코덱 전략
 
 | | macOS | Windows | Android | iOS |
 |---|---|---|---|---|
@@ -419,7 +483,7 @@ Android 는 이번 버전에서 **사진 클립**(`MediaItem.setImageDurationMs`
 
 ---
 
-## 10. 저장 포맷 `.muudproj` ✅
+## 11. 저장 포맷 `.muudproj` ✅
 
 ```json
 {
@@ -450,7 +514,7 @@ Android 는 이번 버전에서 **사진 클립**(`MediaItem.setImageDurationMs`
 
 ---
 
-## 11. 로드맵
+## 12. 로드맵
 
 ### 1단계 — MVP (현재)
 | 기능 | 상태 |
@@ -488,7 +552,7 @@ Android 는 이번 버전에서 **사진 클립**(`MediaItem.setImageDurationMs`
 
 ---
 
-## 12. 성능 예산과 리스크
+## 13. 성능 예산과 리스크
 
 | 항목 | 예산 | 근거 |
 |---|---|---|
@@ -509,7 +573,7 @@ Android 는 이번 버전에서 **사진 클립**(`MediaItem.setImageDurationMs`
 
 ---
 
-## 13. 디렉터리 구조
+## 14. 디렉터리 구조
 
 ```text
 muud-edits/
@@ -535,13 +599,13 @@ muud-edits/
     ├── analysis_options.yaml
     ├── flutter_rust_bridge.yaml
     ├── lib/main.dart        ← 앱 진입점(테마·홈)
-    ├── lib/theme.dart       ← 팔레트/테마
+    ├── lib/theme.dart       ← 팔레트 + Astryx 시맨틱 토큰(간격·반경·텍스트·밀도·브레이크포인트) + 테마
     ├── lib/models.dart      ← 브리지 JSON 파싱(불변 뷰 모델 + MediaProbe/ExportProgress)
     ├── lib/commands.dart    ← 커맨드 빌더(JSON)
     ├── lib/core_bridge.dart ← CoreBridge 인터페이스 + FRB 구현
     ├── lib/bridge_api.dart  ← EditorController(상태 관리·액션·내보내기 흐름)
     ├── lib/media/media_platform_bridge.dart ← MethodChannel/EventChannel 미디어 경계
-    ├── lib/editor/{editor_screen,preview_panel,timeline_view,inspector_panel}.dart
+    ├── lib/editor/{editor_screen,workspace,editor_section,preview_panel,timeline_view,inspector_panel}.dart
     ├── lib/src/rust/        ← flutter_rust_bridge 코드젠 바인딩(커밋됨)
     ├── lib/rust_core_loader.dart ← 플랫폼별 코어 라이브러리 로딩
     └── native/              ← 4플랫폼 네이티브 미디어 엔진(스캐폴딩 + 파이프라인)
@@ -553,7 +617,7 @@ muud-edits/
 
 ---
 
-## 14. 테스트 전략
+## 15. 테스트 전략
 
 | 층 | 방법 | 현재 |
 |---|---|---|
@@ -566,7 +630,8 @@ muud-edits/
 | 내보내기 매트릭스 | 5플랫폼 × 4코덱 조합 검증, 워터마크 부재 | ✅ |
 | 브리지 계약 | JSON 문자열 왕복(실패 코드 포함) | ✅ |
 | 통합 파이프라인 | 편집 → 그래프 → 진행률/취소 → 프로브 (`tests/render_pipeline.rs`) | ✅ 7개 |
-| UI | 위젯 테스트(타임라인 드래그 → 커맨드 발행) | 🔜 Flutter 설치 후 |
+| UI | 위젯 테스트(타임라인 드래그 → 커맨드 발행, 인스펙터·내보내기·자막 흐름) | ✅ 52개 |
+| UI 토큰·레이아웃 | 토큰 스케일/대비, wide·medium·compact 배치, 리사이즈 드래그, 48dp 타깃 | ✅ 20개(v0.1.7) |
 | 통합 | 실제 미디어 3종으로 익스포트 후 ffprobe 검증 | 🔜 |
 
 `cargo test`는 미디어 파일 없이 돈다(경로만 문자열). 실제 인코딩 검증은 2단계 CI에서
@@ -574,13 +639,14 @@ muud-edits/
 
 ---
 
-## 15. 다음 단계 체크리스트
+## 16. 다음 단계 체크리스트
 
 - [x] 코어 모델/커맨드/undo/redo/저장/내보내기 계획
 - [x] Flutter 앱 스캐폴딩(타임라인·프리뷰·인스펙터 뼈대)
 - [x] 결정적 렌더 그래프(RenderGraph) + 진행률/프로브 모델 + 브리지 API
 - [x] 4플랫폼 네이티브 미디어 레이어 스캐폴딩 + 핵심 파이프라인 코드
 - [x] Flutter `MediaPlatformBridge`(MethodChannel/EventChannel) + 파일 선택·프로브·진행률 UI
+- [x] Astryx 시맨틱 토큰 + 반응형 작업 공간(사이드 패널/하단 시트, 리사이즈 핸들) — v0.1.7
 - [ ] `flutter_rust_bridge_codegen generate`로 바인딩 생성 (Flutter 설치 후)
 - [ ] `flutter create`로 플랫폼 폴더 생성 후 네이티브 파일 연결(LOCAL_SETUP 4절)
 - [ ] 실기기 검증: macOS/Xcode · Windows/MSVC+ffmpeg · Android Studio · iOS

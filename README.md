@@ -11,11 +11,11 @@ Windows · macOS · Android · iOS.
 > Rust 테스트로 검증되고, 실제 디코드/합성/인코딩은
 > `app/native/`의 AVFoundation·Media3·FFmpeg 파이프라인이 맡는다.
 > 실기기/Xcode/Android Studio/MSVC 빌드 검증은 아직 남아 있다
-> (`ARCHITECTURE.md` 15절 체크리스트).
+> (`ARCHITECTURE.md` 16절 체크리스트).
 
 ---
 
-## 미리보기·내보내기 현재 상태 (v0.1.6)
+## 미리보기·내보내기 현재 상태 (v0.1.7)
 
 | 기능 | 상태 |
 |---|---|
@@ -36,6 +36,7 @@ Windows · macOS · Android · iOS.
 | Windows/macOS/iOS 내보내기 | ⚠️ 네이티브 구현은 있고 CI 빌드는 통과하지만, 실기기 검증은 아직 |
 | 타임라인 줌/스크롤 · 드래그 편집 | ✅ 핀치 줌(0.25~24x)·가로/세로 스크롤, 클립 본체 드래그=이동, 좌우 핸들=트림 (v0.1.6) |
 | 트랙 음소거/숨김/잠금 | ✅ 타임라인 왼쪽 거터 토글 |
+| UI/UX | ✅ **Astryx 토큰 이식** — 시맨틱 간격/텍스트/표면, 반응형 작업 공간(≥1024 사이드 패널 · 768~1023 축소 패널 · <768 하단 시트), 인스펙터 폭·타임라인 높이 리사이즈 핸들, 48dp 터치 타깃 (v0.1.7) |
 
 > 미리보기는 "지금 재생 헤드에 해당하는 클립 하나"를 플레이어에 물려 재생한다.
 > **재생 중에는 플레이어가 시계**이고(플레이어가 알려 주는 위치를 100ms 사이만 벽시계로
@@ -47,6 +48,25 @@ Windows · macOS · Android · iOS.
 > 여전히 짧은 전환 시간이 있다(합성 파이프라인은 2단계 과제).
 
 ---
+
+## UI/UX — Astryx 이식 (v0.1.7)
+
+외부 디자인 패키지를 넣지 않고, 메타 Astryx 의 **시맨틱 토큰**과
+**outside-in 레이아웃**을 Flutter 기본 위젯 위에 직접 구현했다.
+
+* **토큰 2계층** — `app/lib/theme.dart`: 원시 팔레트 위에
+  `EditorSpacing`(4px 스케일, content line 16) · `EditorRadius` · `EditorStroke`(1px) ·
+  `EditorText`(display/lead/section/body/label/caption, 1·2·3차 색) ·
+  `EditorSurfaces`(canvas→panel→raised→overlay) · `EditorDensity`(touch 48dp / compact 32dp) ·
+  `EditorBreakpoints`(768 / 1024). 위젯은 색을 직접 만들지 않고 토큰만 읽는다.
+* **레이아웃** — `app/lib/editor/workspace.dart`:
+  * `≥1024px`: 상단 바 + [미리보기 │ 리사이즈 가능 인스펙터] + 트랜스포트 + 타임라인
+  * `768~1023px`: 2영역. 클립을 선택했을 때만 축소 폭 패널이 붙는다
+  * `<768px`: 인스펙터를 하단 BottomSheet 로 스왑(타임라인은 시트 위에 남는다), 툴바 48dp
+* **컨테이너** — `EditorSection` + 1px `Divider` + 단일 패딩 라인. 카드 안의 카드 없음.
+  영역마다 lead 하나와 primary action 하나(상단 바의 "내보내기")만 강조한다.
+* **회귀 테스트** — `app/test/theme_tokens_test.dart`, `editor_layout_test.dart`,
+  `inspector_panel_test.dart` (총 72개 위젯/단위 테스트).
 
 ## 지금 바로 확인할 수 있는 것
 
@@ -82,8 +102,9 @@ cargo run --example demo_project
 
 ## Flutter 앱 (UI 스캐폴딩)
 
-`app/`에는 편집 화면 뼈대가 들어 있다: 프리뷰 패널, 타임라인(CustomPainter),
-트랜스포트 바, 클립 인스펙터, 내보내기 시트(진행률/취소 포함).
+`app/`에는 편집 화면이 들어 있다: 반응형 작업 공간(사이드 패널/하단 시트),
+프리뷰 패널, 타임라인(CustomPainter), 트랜스포트 바, 클립 인스펙터,
+내보내기 시트(진행률/취소 포함).
 파일 선택 → 네이티브 프로브 → 클립 추가 흐름과, 렌더 그래프를 네이티브 엔진에
 넘기는 내보내기 흐름이 연결되어 있다.
 
@@ -143,10 +164,11 @@ muud-edits/
 └── app/                       Flutter UI + 네이티브 미디어 경계
     ├── lib/                   main, bridge_api(상태 관리), core_bridge, commands, models, theme
     ├── lib/media/             media_platform_bridge(MethodChannel/EventChannel)
-    ├── lib/editor/            editor_screen, preview_panel, timeline_view, inspector_panel
+    ├── lib/editor/            editor_screen, workspace, editor_section, preview_panel,
+    │                          timeline_view, inspector_panel, preview_engine
     ├── lib/src/rust/          flutter_rust_bridge 코드젠 바인딩(커밋됨)
     ├── lib/rust_core_loader.dart  플랫폼별 코어 라이브러리 로딩
-    ├── test/                  FFI 실연결 테스트 + UI 흐름 위젯 테스트
+    ├── test/                  FFI 실연결 + UI 흐름/토큰/반응형 레이아웃 위젯 테스트(72개)
     └── native/                apple(Swift) · android(Kotlin) · windows(C++) 미디어 엔진
 ```
 
@@ -165,4 +187,4 @@ muud-edits/
 
 Rust 코어: MIT OR Apache-2.0.
 FFmpeg을 배포에 포함할 경우 LGPL 조건과 코덱 특허를 별도로 검토해야 한다
-(`ARCHITECTURE.md` 12절 리스크).
+(`ARCHITECTURE.md` 13절 리스크).
