@@ -503,6 +503,22 @@ void FfmpegPipeline::RunExport(std::string graph_json, std::string output_path) 
   std::ostringstream filters;
   std::vector<std::string> video_labels;
   int segment_number = 0;
+  const int64_t graph_duration_ms = std::max<int64_t>(0, JsonInt(graph, "duration_ms", 0));
+  // 지금까지 이어 붙인 출력 길이(ms). 세그먼트 사이의 빈 구간을 채우는 기준이다.
+  int64_t cursor_ms = 0;
+
+  // 빈 구간: 프로젝트 해상도/fps 에 맞는 검은 화면을 끼워 넣는다.
+  // (예전에는 세그먼트를 그냥 concat 해서 빈 구간만큼 영상이 앞당겨졌고,
+  //  오디오·자막이 그만큼 어긋났다.)
+  auto push_gap = [&](int64_t start_ms, int64_t end_ms) {
+    if (end_ms <= start_ms) return;
+    std::string label = "v" + std::to_string(segment_number++);
+    filters << "color=c=black:s=" << out_width << "x" << out_height
+            << ":r=" << fps << ":d=" << FormatSeconds(end_ms - start_ms)
+            << ",format=yuv420p,setsar=1[" << label << "];";
+    video_labels.push_back(label);
+  };
+
   for (const auto& segment : segments) {
     if (JsonString(segment, "kind") != "video") continue;
     if (static_cast<int>(JsonInt(segment, "layer", 0)) != base_layer) continue;
@@ -512,24 +528,29 @@ void FfmpegPipeline::RunExport(std::string graph_json, std::string output_path) 
 
     int64_t in_ms = JsonInt(segment, "source_in_ms", 0);
     int64_t out_ms = JsonInt(segment, "source_out_ms", 0);
-    int64_t render_ms = JsonInt(segment, "render_end_ms", 0) -
-                        JsonInt(segment, "render_start_ms", 0);
+    int64_t render_start = std::max<int64_t>(0, JsonInt(segment, "render_start_ms", 0));
+    int64_t render_end = std::max<int64_t>(render_start,
+                                           JsonInt(segment, "render_end_ms", 0));
+    int64_t render_ms = render_end - render_start;
     double speed = JsonDouble(segment, "speed", 1.0);
     if (speed <= 0) speed = 1.0;
 
+    if (render_start > cursor_ms) {
+      push_gap(cursor_ms, render_start);
+      cursor_ms = render_start;
+    }
+
     std::ostringstream chain;
+    // 배속은 여기서 **한 번만** 적용한다.
+    // 소스 구간(out-in)을 speed 로 나눈 길이가 곧 타임라인 길이(render_ms)이므로,
+    // 예전처럼 render_ms/(out-in) 를 한 번 더 곱하면 배속이 두 번 걸린다.
     chain << "[" << index << ":v]trim=start=" << FormatSeconds(in_ms)
           << ":end=" << FormatSeconds(out_ms) << ",setpts=(PTS-STARTPTS)/"
           << speed;
-    // 배속이 바뀌면 출력 길이도 바뀐다. concat 전에 다시 맞춰 준다.
-    if (render_ms > 0) {
-      chain << ",setpts=PTS*(" << FormatSeconds(render_ms) << "/"
-            << FormatSeconds(std::max<int64_t>(1, out_ms - in_ms)) << ")";
-    }
     chain << ",scale=" << out_width << ":" << out_height
           << ":force_original_aspect_ratio=decrease,"
           << "pad=" << out_width << ":" << out_height
-          << ":(ow-iw)/2:(oh-ih)/2:black,setsar=1";
+          << ":(ow-iw)/2:(oh-ih)/2:black,fps=" << fps << ",setsar=1";
     const int64_t fade_in = JsonInt(segment, "fade_in_ms", 0);
     const int64_t fade_out = JsonInt(segment, "fade_out_ms", 0);
     if (fade_in > 0) {
@@ -539,9 +560,15 @@ void FfmpegPipeline::RunExport(std::string graph_json, std::string output_path) 
       chain << ",fade=t=out:st=" << FormatSeconds(std::max<int64_t>(0, render_ms - fade_out))
             << ":d=" << FormatSeconds(fade_out);
     }
+    cursor_ms = std::max(cursor_ms, render_end);
     std::string label = "v" + std::to_string(segment_number++);
     filters << chain.str() << "[" << label << "];";
     video_labels.push_back(label);
+  }
+
+  // 마지막 클립 뒤 ~ 프로젝트 끝도 검은 화면으로 채워 길이를 맞춘다.
+  if (graph_duration_ms > cursor_ms) {
+    push_gap(cursor_ms, graph_duration_ms);
   }
 
   if (video_labels.empty()) {
@@ -560,18 +587,18 @@ void FfmpegPipeline::RunExport(std::string graph_json, std::string output_path) 
   }
   filters << "]concat=n=" << video_labels.size() << ":v=1:a=0[" << video_out << "];";
 
-  // 오디오: 겹치지 않으면 concat, 겹치면 amix.
+  // 오디오: 세그먼트를 **출력 시각 위치에** 놓고 더한다(amix).
+  //
+  // 예전에는 겹치지 않는 세그먼트를 concat 했기 때문에, 세그먼트 사이에 빈
+  // 구간이 있으면 뒤 오디오가 앞당겨져 영상과 어긋났다. 지금은 각 세그먼트를
+  // adelay 로 제자리에 밀어 놓고, 빈 구간은 무음으로 남긴다.
   std::vector<std::string> audio_labels;
-  bool audio_overlap = false;
-  int64_t last_end = -1;
   for (const auto& segment : audio_segments) {
     if (JsonBool(segment, "muted", false)) continue;
     const std::string path = JsonString(segment, "source_path");
     if (path.empty()) continue;
     int index = add_input(path);
-    int64_t start = JsonInt(segment, "render_start_ms", 0);
-    if (last_end >= 0 && start < last_end) audio_overlap = true;
-    last_end = std::max(last_end, JsonInt(segment, "render_end_ms", 0));
+    int64_t start = std::max<int64_t>(0, JsonInt(segment, "render_start_ms", 0));
 
     double speed = JsonDouble(segment, "speed", 1.0);
     double gain = JsonDouble(segment, "gain", 1.0);
@@ -601,6 +628,13 @@ void FfmpegPipeline::RunExport(std::string graph_json, std::string output_path) 
               << ":d=" << FormatSeconds(std::min<int64_t>(duration, 1000));
       }
     }
+    // 제자리로 밀어 놓기 + 프로젝트 끝까지 무음 패딩.
+    if (start > 0) {
+      chain << ",adelay=delays=" << start << ":all=1";
+    }
+    if (graph_duration_ms > 0) {
+      chain << ",apad=whole_dur=" << FormatSeconds(graph_duration_ms);
+    }
     std::string label = "a" + std::to_string(audio_labels.size());
     filters << chain.str() << "[" << label << "];";
     audio_labels.push_back(label);
@@ -609,22 +643,22 @@ void FfmpegPipeline::RunExport(std::string graph_json, std::string output_path) 
   std::string audio_out;
   if (!audio_labels.empty()) {
     audio_out = "aout";
-    if (audio_overlap) {
-      filters << "[";
-      for (size_t i = 0; i < audio_labels.size(); ++i) {
-        filters << audio_labels[i];
-        if (i + 1 < audio_labels.size()) filters << "[";
-      }
-      filters << "]amix=inputs=" << audio_labels.size()
-              << ":duration=longest:normalize=0[" << audio_out << "];";
+    if (audio_labels.size() == 1) {
+      filters << "[" << audio_labels.front() << "]anull[" << audio_out << "];";
     } else {
       filters << "[";
       for (size_t i = 0; i < audio_labels.size(); ++i) {
         filters << audio_labels[i];
         if (i + 1 < audio_labels.size()) filters << "[";
       }
-      filters << "]concat=n=" << audio_labels.size() << ":v=0:a=1[" << audio_out
-              << "];";
+      filters << "]amix=inputs=" << audio_labels.size()
+              << ":duration=longest:normalize=0[amixed];";
+      if (graph_duration_ms > 0) {
+        filters << "[amixed]atrim=start=0:end=" << FormatSeconds(graph_duration_ms)
+                << ",asetpts=PTS-STARTPTS[" << audio_out << "];";
+      } else {
+        filters << "[amixed]anull[" << audio_out << "];";
+      }
     }
   }
 
