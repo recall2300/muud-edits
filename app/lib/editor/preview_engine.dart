@@ -19,6 +19,7 @@ class PreviewSelection {
   const PreviewSelection({
     this.visualClip,
     this.audioClip,
+    this.audioFromVideoTrack = false,
     this.sourceMs = 0,
     this.opacity = 1,
     this.volume = 1,
@@ -29,8 +30,14 @@ class PreviewSelection {
   /// 화면에 그릴 영상/이미지 클립(가장 위 트랙).
   final ClipView? visualClip;
 
-  /// 별도 오디오 트랙에서 이 시각에 재생할 클립.
+  /// 이 시각에 들려야 하는 소리의 클립.
+  ///
+  /// 우선순위: 별도 오디오 트랙 클립 → (화면이 이미지일 때) 아래 비디오 트랙의
+  /// 영상 클립. 화면이 영상이면 그 영상이 자기 소리를 내므로 null 이다.
   final ClipView? audioClip;
+
+  /// [audioClip]이 비디오 트랙에서 온 것인가(위에 이미지가 얹혔을 때).
+  final bool audioFromVideoTrack;
 
   /// [visualClip] 안에서의 소스 시각(ms).
   final int sourceMs;
@@ -87,6 +94,13 @@ int timelineTimeFor(ClipView clip, int sourceMs) {
   return clip.offsetMs + (safeDelta / speed).round();
 }
 
+/// 미리보기에서 낼 수 있는 최대 볼륨.
+///
+/// 클립 볼륨은 프로젝트에서 2.0까지 열려 있지만, `video_player` 는 플랫폼
+/// 믹서를 통해 1.0을 넘는 값을 재생하지 못한다. 1.0을 넘는 값은 미리보기에서만
+/// 1.0으로 제한하고, 내보내기(플랫폼 렌더러)는 그래프의 gain 을 그대로 쓴다.
+const double previewVolumeCeiling = 1.0;
+
 /// 재생 헤드에 보여야 하는 클립들을 고른다.
 ///
 /// * 영상/이미지: 위쪽 트랙 우선(합성 순서의 역순). 숨긴 트랙·비활성 클립 제외.
@@ -115,6 +129,7 @@ PreviewSelection resolvePreviewSelection(EditorState state, int atMs) {
     }
   }
 
+  // 1) 별도 오디오 트랙의 클립이 있으면 그것이 소리다.
   ClipView? audio;
   double audioVolume = 1;
   for (final TrackView track in state.tracks) {
@@ -134,13 +149,40 @@ PreviewSelection resolvePreviewSelection(EditorState state, int atMs) {
     }
   }
 
+  // 2) 소리가 없고 화면이 이미지라면, 그 아래 영상 클립의 소리를 살린다.
+  //    (예전에는 위 트랙에서 이미지를 고르는 순간 아래 영상의 오디오까지 사라졌다.)
+  bool audioFromVideo = false;
+  if (audio == null && (visual == null || visual.kind != 'video')) {
+    for (final TrackView track in state.tracks.reversed) {
+      if (track.hidden || track.kind == 'audio') {
+        continue;
+      }
+      for (final ClipView clip in track.clips) {
+        if (!clip.enabled || !clip.contains(atMs) || clip.kind != 'video') {
+          continue;
+        }
+        if (clip.id == visual?.id) {
+          continue;
+        }
+        audio = clip;
+        audioFromVideo = true;
+        audioVolume = track.muted ? 0 : clip.volume;
+        break;
+      }
+      if (audio != null) {
+        break;
+      }
+    }
+  }
+
   return PreviewSelection(
     visualClip: visual,
     audioClip: audio,
+    audioFromVideoTrack: audioFromVideo,
     sourceMs: visual == null ? 0 : sourceTimeFor(visual, atMs),
     opacity: opacity.clamp(0.0, 1.0),
-    volume: volume.clamp(0.0, 1.0),
-    audioVolume: audioVolume.clamp(0.0, 1.0),
+    volume: volume.clamp(0.0, previewVolumeCeiling),
+    audioVolume: audioVolume.clamp(0.0, previewVolumeCeiling),
     isGap: visual == null,
   );
 }
@@ -446,6 +488,16 @@ class PreviewEngine extends ChangeNotifier {
   /// 절전으로 플레이어가 오래 멈춘 경우) 플레이어를 다시 맞춘다.
   static const int playingSlackMs = 1200;
 
+  /// 시크 직후 플랫폼 보고를 믿기까지의 여유(ms).
+  ///
+  /// 플랫폼 플레이어는 시크를 받은 직후에도 잠시 **이전 위치(0)** 를 보고한다.
+  /// 그 값을 재생 시계에 그대로 넣으면 플레이헤드가 인점보다 앞(0ms)으로 튀었다가
+  /// 다음 보고에서 되돌아와, 트림된 클립의 첫 시크가 "0ms 에서 멈춤/점프"로 보인다.
+  static const int seekHoldToleranceMs = 200;
+
+  /// 시크 보고를 기다리는 최대 시간(ms). 넘으면 보고를 그대로 받아들인다.
+  static const int seekHoldTimeoutMs = 1500;
+
   /// 다음 클립을 미리 열기 시작하는 남은 시간(ms).
   static const int preloadLeadMs = 1500;
 
@@ -498,6 +550,10 @@ class PreviewEngine extends ChangeNotifier {
   int _pendingSeekMs = -1;
   bool _seekInFlight = false;
 
+  /// 시크 목표(영상 플레이어). 플랫폼이 이 위치에 도달하기 전 보고는 무시한다.
+  int _visualHoldMs = -1;
+  int _visualHoldDeadlineMs = 0;
+
   /// [_sync] 가 실행 중인가(겹쳐 들어온 요청은 한 번만 더 돌린다).
   bool _syncInFlight = false;
   bool _syncAgain = false;
@@ -546,7 +602,13 @@ class PreviewEngine extends ChangeNotifier {
   ValueListenable<int> get repaint => _repaint;
 
   /// 현재 클립의 영상 표면. 영상이 없으면 null.
+  ///
+  /// 빈 구간에서는 플레이어를 살려 두지만(재진입 비용 절감) 화면에는 아무것도
+  /// 그리지 않는다. 빈 구간 안내는 프리뷰 패널이 대신 보여 준다.
   Widget? get surface {
+    if (selection.visualClip == null) {
+      return null;
+    }
     final PreviewMedia? media = _visual;
     if (media == null || !media.isReady || !media.hasVideo) {
       return null;
@@ -730,6 +792,11 @@ class PreviewEngine extends ChangeNotifier {
   /// 재생 중 틱마다 플랫폼/비동기 작업을 돌리지 않기 위해, 실제로 무엇이
   /// 바뀌었을 때만 참을 돌려준다.
   bool _needsSync(EditorState state, PreviewSelection sel) {
+    // 열기/시크가 진행 중이면 매 프레임 다시 쌓지 않는다(중복 트리거 억제).
+    // 열기가 끝나면 [_syncOnce] 가 이 선택을 기록하므로 다음 틱부터 다시 판단한다.
+    if (_openingVisual || _openingAudio || _seekInFlight) {
+      return false;
+    }
     // 클립이 바뀌었거나 빈 구간으로 들어갔다.
     if (!_sameSelection(sel, _syncedSelection)) {
       return true;
@@ -773,7 +840,12 @@ class PreviewEngine extends ChangeNotifier {
         visualClip != null &&
         visualClip.kind == 'video' &&
         _visualClipId == visualClip.id) {
-      final int source = _visualClock.advance(visual.positionMs, now);
+      final int raw = visual.positionMs;
+      if (_reportIsStale(raw, now)) {
+        // 시크 목표에 아직 도달하지 못한 보고(0 등) — 벽시계로 계속 흐르게 둔다.
+        return null;
+      }
+      final int source = _visualClock.advance(raw, now);
       return timelineTimeFor(visualClip, source);
     }
     final PreviewMedia? audio = _audio;
@@ -789,8 +861,27 @@ class PreviewEngine extends ChangeNotifier {
     return null;
   }
 
-  void _finishPlayback() {
-    _playing = false;
+  /// 플랫폼이 보고한 위치가 아직 시크 목표에 미치지 못한가.
+  ///
+  /// 시크 직후 0(또는 이전 위치)을 보고하는 플랫폼이 있다. 그 값을 재생 시계에
+  /// 넣으면 트림된 클립의 재생 헤드가 인점보다 앞으로 튄다. 목표에 가까워지면
+  /// 그때부터 보고를 신뢰하고, 너무 오래 걸리면(타임아웃) 그냥 받아들인다.
+  bool _reportIsStale(int rawSourceMs, int nowMs) {
+    if (_visualHoldMs < 0) {
+      return false;
+    }
+    if (rawSourceMs + seekHoldToleranceMs >= _visualHoldMs) {
+      _visualHoldMs = -1;
+      return false;
+    }
+    if (nowMs >= _visualHoldDeadlineMs) {
+      _visualHoldMs = -1;
+      return false;
+    }
+    return true;
+  }
+
+  void _finishPlayback() {    _playing = false;
     _ticker?.cancel();
     _ticker = null;
     _visualStarted = false;
@@ -908,6 +999,7 @@ class PreviewEngine extends ChangeNotifier {
     }
     final int at = atMs ?? _position.value;
     final PreviewSelection selection = sel ?? resolvePreviewSelection(state, at);
+    final String? beforeVisual = _syncedSelection?.visualClip?.id;
 
     if (forceSeek) {
       _freshVisual = _visual != null;
@@ -935,6 +1027,10 @@ class PreviewEngine extends ChangeNotifier {
     // 이 선택으로 플레이어를 맞춘 것을 기록한다(다음 틱은 바뀐 것이 없으면 아무 일도 안 함).
     _syncedSelection = selection;
     _syncedState = state;
+    // 화면에 그릴 클립이 바뀌었으면 프리뷰 표면을 다시 그린다(빈 구간 → 검은 화면).
+    if (beforeVisual != selection.visualClip?.id) {
+      _repaint.value++;
+    }
   }
 
   Future<void> _syncVisual(
@@ -950,7 +1046,16 @@ class PreviewEngine extends ChangeNotifier {
     if (_visualClipId != clip.id) {
       return; // 아직 새 클립으로 바뀌는 중
     }
-    await _applyPosition(visual, sourceTimeFor(clip, atMs), fresh: _freshVisual);
+    await _applyPosition(
+      visual,
+      sourceTimeFor(clip, atMs),
+      fresh: _freshVisual,
+      onSeekIssued: (int target) {
+        // 시크 직후 플랫폼이 0을 보고해도 플레이헤드가 튀지 않게 한다.
+        _visualHoldMs = target;
+        _visualHoldDeadlineMs = _clockMs() + seekHoldTimeoutMs;
+      },
+    );
     _freshVisual = false;
     await _safeCall(() => visual.setVolume(selection.volume));
     await _safeCall(() => visual.setSpeed(clip.speed));
@@ -999,9 +1104,17 @@ class PreviewEngine extends ChangeNotifier {
         : null;
 
     if (path == null) {
-      // 이미지 클립이거나 빈 구간: 영상 플레이어는 내려놓는다.
-      if (_visual != null) {
-        await _closeVisual();
+      // 빈 구간·이미지 클립: 플레이어를 즉시 버리지 않고 일시정지해 둔다.
+      // 같은 프로젝트 안에서 클립 끝을 지나 빈 구간에 들어갔다가 돌아오는 경우가
+      // 흔한데, 매번 dispose/open 하면 그때마다 수백 ms 멈추고 화면이 깜빡인다.
+      // 실제 정리는 다른 파일을 열거나 엔진이 dispose 될 때 한다.
+      final PreviewMedia? media = _visual;
+      if (media != null) {
+        _visualStarted = false;
+        _visualClipId = null;
+        _freshVisual = true;
+        _visualClock.reset();
+        await _safeCall(media.pause);
       }
       _failedVisualPath = null;
       return;
@@ -1212,6 +1325,7 @@ class PreviewEngine extends ChangeNotifier {
     PreviewMedia media,
     int targetMs, {
     required bool fresh,
+    void Function(int targetMs)? onSeekIssued,
   }) async {
     final int current = media.positionMs;
     final int limit = fresh
@@ -1226,6 +1340,7 @@ class PreviewEngine extends ChangeNotifier {
     }
     _seekInFlight = true;
     try {
+      onSeekIssued?.call(targetMs);
       await media.seekTo(targetMs);
     } on Object catch (error) {
       _error ??= _describe(error);
@@ -1234,7 +1349,7 @@ class PreviewEngine extends ChangeNotifier {
       final int pending = _pendingSeekMs;
       _pendingSeekMs = -1;
       if (pending >= 0 && (pending - targetMs).abs() > scrubSeekThresholdMs) {
-        await _applyPosition(media, pending, fresh: true);
+        await _applyPosition(media, pending, fresh: true, onSeekIssued: onSeekIssued);
       }
     }
   }
