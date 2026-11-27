@@ -294,12 +294,17 @@ class _MobileToolbarState extends State<MobileToolbar> {
   /// 재생 헤드 위 클립을 골라 조정 패널을 연다(선택이 없을 때 메인 툴바에서).
   void _adjustAtPlayhead() {
     final ({TrackView track, ClipView clip})? hit = _controller.clipAtPlayhead();
+    final BuildContext? context = mounted ? this.context : null;
     if (hit == null) {
-      _controller.setPlayhead(_controller.playheadMs);
       setState(() {
         _panel = MobilePanel.none;
         _panelClipId = null;
       });
+      if (context != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('재생 헤드 위에 클립이 없습니다')),
+        );
+      }
       return;
     }
     _controller.selectClip(hit.clip.id);
