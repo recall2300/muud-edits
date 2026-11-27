@@ -742,7 +742,10 @@ class _ExportSheet extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 8),
-                _ExportLimitNote(state: controller.state),
+                _ExportLimitNote(
+                  state: controller.state,
+                  platform: controller.exportPlatform,
+                ),
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
@@ -999,10 +1002,16 @@ class _ExportSheet extends StatelessWidget {
 }
 
 /// 이번 버전 내보내기의 한계를 숨기지 않고 보여 준다.
+///
+/// "지원하지 않는다"는 문구는 실제 구현 상태와 맞아야 한다. 지금 자막·텍스트
+/// burn-in 과 사진 클립은 Windows(사진 제외)·iOS/macOS·Android 에서 동작한다.
 class _ExportLimitNote extends StatelessWidget {
-  const _ExportLimitNote({required this.state});
+  const _ExportLimitNote({required this.state, required this.platform});
 
   final EditorState? state;
+
+  /// 지금 고른 내보내기 플랫폼(`android`·`windows`·`macos`·`ios`).
+  final String platform;
 
   @override
   Widget build(BuildContext context) {
@@ -1011,11 +1020,29 @@ class _ExportLimitNote extends StatelessWidget {
         ? const <ClipView>[]
         : current.tracks.expand((TrackView track) => track.clips);
     final bool hasOverlays =
-        current != null && (current.subtitles.isNotEmpty || clips.any((ClipView clip) => clip.kind == 'text'));
+        current != null &&
+        (current.subtitles.isNotEmpty ||
+            clips.any((ClipView clip) => clip.kind == 'text'));
     final bool hasImages = clips.any((ClipView clip) => clip.kind == 'image');
+    // 영상이 올라간 시각 레이어가 둘 이상이면 Android 는 맨 아래만 합성한다.
+    final int visualLayers = current == null
+        ? 0
+        : current.tracks
+              .where(
+                (TrackView track) =>
+                    track.kind != 'audio' &&
+                    track.clips.any(
+                      (ClipView clip) =>
+                          clip.kind == 'video' || clip.kind == 'image',
+                    ),
+              )
+              .length;
     final List<String> notes = <String>[
-      if (hasOverlays) '자막·텍스트는 미리보기에만 보이고 영상에는 새기지 않습니다(이번 버전).',
-      if (hasImages) '사진 클립은 내보내기에서 제외됩니다(이번 버전).',
+      if (hasOverlays) '자막·텍스트는 영상 위에 새겨져 내보내집니다(burn-in).',
+      if (hasImages && platform == 'windows')
+        '사진 클립은 Windows 내보내기에서 아직 제외됩니다(영상만 합성).',
+      if (visualLayers > 1 && platform == 'android')
+        'Android 는 맨 아래 비디오 트랙을 기준으로 합성합니다(위 레이어 영상은 제외).',
       '영상·오디오 자르기/병합은 원본 화질 그대로 내보냅니다.',
     ];
     return Container(

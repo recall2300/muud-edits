@@ -78,6 +78,19 @@ class InspectorPanel extends StatelessWidget {
               '${formatTimecode(clip.offsetMs)} → ${formatTimecode(clip.endOffsetMs)} (${formatTimecode(clip.durationMs)})',
         ),
         const SizedBox(height: 10),
+        if (clip.kind == 'text') ...<Widget>[
+          _InfoRow(
+            label: '문구',
+            value: (clip.textContent ?? '').isEmpty
+                ? '(빈 텍스트)'
+                : clip.textContent!,
+          ),
+          _TextContentEditor(
+            clip: clip,
+            onCommit: (String value) =>
+                controller.setTextClipContent(clip, value),
+          ),
+        ],
         if (clip.kind != 'text') ...<Widget>[
           _TrimSlider(
             label: '시작 자르기',
@@ -235,6 +248,95 @@ class _TrimSliderState extends State<_TrimSlider> {
         ),
       ],
     );
+  }
+}
+
+/// 텍스트 클립의 문구를 바로 고치는 입력칸.
+///
+/// 입력 중에는 로컬 값만 바꾸고, "적용"을 누를 때 `set_clip_text` 커맨드를
+/// 한 번 보낸다(타이핑마다 커맨드를 쌓지 않는다 — 되돌리기 한 단계로 유지).
+class _TextContentEditor extends StatefulWidget {
+  const _TextContentEditor({required this.clip, required this.onCommit});
+
+  final ClipView clip;
+  final Future<void> Function(String value) onCommit;
+
+  @override
+  State<_TextContentEditor> createState() => _TextContentEditorState();
+}
+
+class _TextContentEditorState extends State<_TextContentEditor> {
+  late final TextEditingController _text = TextEditingController(
+    text: widget.clip.textContent ?? '',
+  );
+  late String _clipId = widget.clip.id;
+
+  @override
+  void didUpdateWidget(covariant _TextContentEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 다른 텍스트 클립을 골랐을 때만 입력칸을 그 클립의 문구로 바꾼다
+    // (같은 클립이면 사용자가 타이핑 중인 내용을 건드리지 않는다).
+    if (widget.clip.id != _clipId) {
+      _clipId = widget.clip.id;
+      _text.text = widget.clip.textContent ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: <Widget>[
+          const SizedBox(
+            width: 64,
+            child: Text(
+              '문구 수정',
+              style: TextStyle(color: EditorPalette.textMuted, fontSize: 10),
+            ),
+          ),
+          Expanded(
+            child: TextField(
+              controller: _text,
+              style: const TextStyle(color: EditorPalette.text, fontSize: 11),
+              decoration: const InputDecoration(
+                isDense: true,
+                hintText: '화면에 표시할 문구',
+              ),
+              onSubmitted: (String value) => _commit(),
+            ),
+          ),
+          const SizedBox(width: 6),
+          FilledButton(
+            onPressed: _commit,
+            style: FilledButton.styleFrom(
+              minimumSize: const Size(48, 30),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              visualDensity: VisualDensity.compact,
+            ),
+            child: const Text('적용', style: TextStyle(fontSize: 10)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _commit() {
+    final String value = _text.text.trim();
+    if (value.isEmpty) {
+      return;
+    }
+    if (value == (widget.clip.textContent ?? '')) {
+      return;
+    }
+    widget.onCommit(value);
   }
 }
 
