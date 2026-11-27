@@ -72,6 +72,7 @@ impl Editor {
             applied.label,
             &self.project,
             &self.history,
+            applied.created_clip_id,
         ))
     }
 
@@ -87,6 +88,7 @@ impl Editor {
             applied.label,
             &self.project,
             &self.history,
+            applied.created_clip_id,
         )))
     }
 
@@ -102,6 +104,7 @@ impl Editor {
             applied.label,
             &self.project,
             &self.history,
+            applied.created_clip_id,
         )))
     }
 
@@ -263,6 +266,43 @@ impl Editor {
             clip_id: clip_id.clone(),
             volume,
         })?;
+        Ok(())
+    }
+
+    /// 비디오 클립의 소리를 별도 오디오 클립으로 분리한다(한 단계로 되돌릴 수 있다).
+    ///
+    /// 원본은 볼륨 0.0이 되고, 새 오디오 클립 id를 돌려준다.
+    pub fn extract_audio(
+        &mut self,
+        track_id: &TrackId,
+        clip_id: &ClipId,
+    ) -> Result<Option<ClipId>, EditError> {
+        let outcome = self.apply(EditCommand::ExtractAudio {
+            track_id: track_id.clone(),
+            clip_id: clip_id.clone(),
+            to_track_id: None,
+            new_clip_id: None,
+        })?;
+        Ok(outcome.created_clip_id.map(ClipId::new))
+    }
+
+    /// 클립을 원본 바로 뒤에 복제한다. 새 클립 id를 돌려준다.
+    pub fn duplicate_clip(
+        &mut self,
+        track_id: &TrackId,
+        clip_id: &ClipId,
+    ) -> Result<Option<ClipId>, EditError> {
+        let outcome = self.apply(EditCommand::DuplicateClip {
+            track_id: track_id.clone(),
+            clip_id: clip_id.clone(),
+            new_clip_id: None,
+        })?;
+        Ok(outcome.created_clip_id.map(ClipId::new))
+    }
+
+    /// 프로젝트 이름 변경.
+    pub fn rename_project(&mut self, name: impl Into<String>) -> Result<(), EditError> {
+        self.apply(EditCommand::RenameProject { name: name.into() })?;
         Ok(())
     }
 

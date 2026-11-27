@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:muud_edits/bridge_api.dart';
 import 'package:muud_edits/editor/editor_screen.dart';
 import 'package:muud_edits/editor/inspector_panel.dart';
+import 'package:muud_edits/editor/mobile_toolbar.dart';
 import 'package:muud_edits/editor/workspace.dart';
 import 'package:muud_edits/media/media_platform_bridge.dart';
 import 'package:muud_edits/models.dart';
@@ -127,8 +128,8 @@ void main() {
     });
   });
 
-  group('좁은 화면(<768)', () {
-    testWidgets('사이드 패널 없이 하단 BottomSheet 로 인스펙터를 보여 준다', (
+  group('좁은 화면(<768) — Edits 스타일', () {
+    testWidgets('인스펙터 시트 대신 하단 툴바가 붙고, 선택하면 컨텍스트 툴바가 된다', (
       WidgetTester tester,
     ) async {
       final EditorController controller = await _pumpEditor(
@@ -138,56 +139,36 @@ void main() {
 
       expect(find.byKey(inspectorSidePanelKey), findsNothing);
       expect(find.byKey(inspectorBottomSheetKey), findsNothing);
+      expect(find.byKey(previewPaneKey), findsOneWidget);
+      expect(find.byKey(timelinePaneKey), findsOneWidget);
+      expect(find.byKey(mobileToolbarKey), findsOneWidget);
+      // 줌 바는 모바일에서 사라졌다(핀치 줌).
+      expect(find.byTooltip('축소'), findsNothing);
 
       controller.selectClip(_firstClip(controller).id);
       await tester.pumpAndSettle();
 
-      expect(find.byKey(inspectorSidePanelKey), findsNothing);
-      expect(find.byKey(inspectorBottomSheetKey), findsOneWidget);
-      expect(find.byType(InspectorPanel), findsOneWidget);
-      expect(find.text('자르기'), findsOneWidget);
-
-      // 시트를 닫으면 선택이 풀리고 시트도 사라진다.
-      await tester.tap(find.byTooltip('닫기'));
-      await tester.pumpAndSettle();
+      // 선택해도 시트가 아니라 툴바가 컨텍스트로 바뀐다.
       expect(find.byKey(inspectorBottomSheetKey), findsNothing);
+      expect(find.text('오디오 추출'), findsOneWidget);
+      expect(find.text('볼륨'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('선택 해제'));
+      await tester.pumpAndSettle();
       expect(controller.selected, isNull);
-    });
-
-    testWidgets('시트 손잡이를 위로 끌면 시트가 커진다', (WidgetTester tester) async {
-      final EditorController controller = await _pumpEditor(
-        tester,
-        const Size(390, 844),
-      );
-      controller.selectClip(_firstClip(controller).id);
-      await tester.pumpAndSettle();
-
-      final double before = tester
-          .getSize(find.byKey(inspectorBottomSheetKey))
-          .height;
-      await tester.drag(
-        find.byKey(inspectorSheetHandleKey),
-        const Offset(0, -50),
-      );
-      await tester.pumpAndSettle();
-      final double after = tester
-          .getSize(find.byKey(inspectorBottomSheetKey))
-          .height;
-      expect(after, closeTo(before + 50, 2));
+      expect(find.text('미디어 추가'), findsOneWidget);
     });
 
     testWidgets('툴바 버튼은 48dp 타깃을 확보한다', (WidgetTester tester) async {
       await _pumpEditor(tester, const Size(390, 844));
 
-      for (final String tooltip in <String>['재생', '한 프레임 뒤로', '추가 · 편집']) {
+      for (final String tooltip in <String>['재생', '되돌리기', '다시 적용', '전체화면']) {
         final Size size = tester.getSize(find.byTooltip(tooltip));
-        expect(size.width, greaterThanOrEqualTo(48), reason: '$tooltip 폭');
-        expect(size.height, greaterThanOrEqualTo(48), reason: '$tooltip 높이');
+        expect(size.width, greaterThanOrEqualTo(44), reason: '$tooltip 폭');
+        expect(size.height, greaterThanOrEqualTo(44), reason: '$tooltip 높이');
       }
-      // 타임라인 줌 버튼도 터치 타깃을 지킨다.
-      final Size zoomOut = tester.getSize(find.byTooltip('축소'));
-      expect(zoomOut.width, greaterThanOrEqualTo(48));
-      expect(zoomOut.height, greaterThanOrEqualTo(48));
+      // 하단 툴바는 아이콘+라벨로 가로 스크롤된다.
+      expect(find.byKey(mobileToolbarScrollerKey), findsOneWidget);
     });
   });
 
@@ -206,7 +187,7 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('영상 · 사진 추가'), findsOneWidget);
 
-    await tester.tap(find.byTooltip('내보내기'));
+    await tester.tap(find.widgetWithText(FilledButton, '내보내기'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
 

@@ -159,13 +159,50 @@ class Commands {
     required String trackId,
     required String clipId,
     required String content,
+    double? sizePx,
+    String? color,
   }) {
     return <String, dynamic>{
       'type': 'set_clip_text',
       'track_id': trackId,
       'clip_id': clipId,
-      'text': <String, dynamic>{'content': content},
+      'text': <String, dynamic>{
+        'content': content,
+        if (sizePx != null) 'size_px': sizePx,
+        if (color != null) 'color': color,
+      },
     };
+  }
+
+  /// 비디오 클립의 소리를 별도 오디오 클립으로 분리(한 단계 되돌리기).
+  static Map<String, dynamic> extractAudio({
+    required String trackId,
+    required String clipId,
+    String? toTrackId,
+  }) {
+    return <String, dynamic>{
+      'type': 'extract_audio',
+      'track_id': trackId,
+      'clip_id': clipId,
+      if (toTrackId != null) 'to_track_id': toTrackId,
+    };
+  }
+
+  /// 클립 복제(원본 바로 뒤). 코어가 새 id를 발급한다.
+  static Map<String, dynamic> duplicateClip({
+    required String trackId,
+    required String clipId,
+  }) {
+    return <String, dynamic>{
+      'type': 'duplicate_clip',
+      'track_id': trackId,
+      'clip_id': clipId,
+    };
+  }
+
+  /// 프로젝트 이름 변경.
+  static Map<String, dynamic> renameProject({required String name}) {
+    return <String, dynamic>{'type': 'rename_project', 'name': name};
   }
 
   /// 자막 수정.

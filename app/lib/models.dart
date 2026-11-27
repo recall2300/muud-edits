@@ -364,6 +364,10 @@ class ClipView {
     required this.enabled,
     required this.textContent,
     this.sourceDurationMs,
+    this.fadeInMs = 0,
+    this.fadeOutMs = 0,
+    this.textSizePx,
+    this.textColor,
   });
 
   final String id;
@@ -380,6 +384,14 @@ class ClipView {
 
   /// 프로브로 알아낸 소스 전체 길이(없으면 트림 범위는 현재 구간 기준).
   final int? sourceDurationMs;
+
+  /// 페이드 인/아웃 길이(ms).
+  final int fadeInMs;
+  final int fadeOutMs;
+
+  /// 텍스트 클립의 글자 크기(px)와 색(`#RRGGBBAA`). 텍스트가 아니면 null.
+  final double? textSizePx;
+  final String? textColor;
 
   /// 재생 속도를 반영한 타임라인 점유 길이(코어와 같은 계산).
   int get durationMs {
@@ -410,6 +422,7 @@ class ClipView {
     if (speed <= 0) {
       speed = 1;
     }
+    final Object? rawTextSize = text['size_px'];
     return ClipView(
       id: _string(json['id']),
       kind: _string(json['kind'], 'video'),
@@ -425,6 +438,10 @@ class ClipView {
       sourceDurationMs: json['source_duration_ms'] is num
           ? (json['source_duration_ms'] as num).round()
           : null,
+      fadeInMs: _int(json['fade_in_ms']),
+      fadeOutMs: _int(json['fade_out_ms']),
+      textSizePx: rawTextSize is num ? rawTextSize.toDouble() : null,
+      textColor: text['color'] is String ? text['color'] as String : null,
     );
   }
 }

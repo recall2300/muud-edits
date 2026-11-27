@@ -6,6 +6,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.os.Handler
 import android.os.Looper
 import androidx.annotation.OptIn
@@ -65,6 +67,9 @@ class ExportEngine(private val context: Context) {
     private var progressRunnable: Runnable? = null
     private var totalFrames: Int = 0
     private val textBitmaps = TextBitmapCache()
+
+    /** 같은 파일의 오디오 스트림 유무를 다시 읽지 않도록 기억한다(오디오 추출 클립 대응). */
+    private val audioStreamCache = mutableMapOf<String, Boolean>()
 
     @Volatile private var canceled = false
 
@@ -310,13 +315,28 @@ class ExportEngine(private val context: Context) {
         graph: JSONObject,
         durationMs: Long,
     ): List<EditedMediaItemSequence> {
-        val specs = graph.optJSONArray("audio_segments").toObjectList()
+        val candidates = graph.optJSONArray("audio_segments").toObjectList()
             .filter { !it.optBoolean("muted", false) }
             .filter {
                 val path = it.optString("source_path", "")
                 path.isNotEmpty() && File(path).exists()
             }
             .sortedBy { it.optLong("render_start_ms", 0L) }
+        // 오디오가 없는 파일(무음 영상)을 시퀀스에 넣으면 Transformer 가 실패한다.
+        // 오디오 추출 클립은 원본이 비디오 파일이므로 여기서 오디오 스트림을 확인한다.
+        val specs = candidates.filter { hasAudioStream(it.optString("source_path", "")) }
+        val skipped = candidates.size - specs.size
+        if (skipped > 0) {
+            emit(
+                mapOf(
+                    "event" to "progress",
+                    "state" to "preparing",
+                    "completed_frames" to 0,
+                    "total_frames" to totalFrames,
+                    "message" to "오디오 스트림이 없는 클립 ${skipped}개는 건너뜁니다",
+                )
+            )
+        }
         if (specs.isEmpty()) {
             return emptyList()
         }
@@ -358,6 +378,31 @@ class ExportEngine(private val context: Context) {
             }
             builder.build()
         }
+    }
+
+    /** 파일에 오디오 스트림이 있는가(비디오 컨테이너의 소리도 포함). */
+    private fun hasAudioStream(path: String): Boolean {
+        if (path.isEmpty()) return false
+        audioStreamCache[path]?.let { return it }
+        var found = false
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(path)
+            for (index in 0 until extractor.trackCount) {
+                val mime = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)
+                if (mime?.startsWith("audio/") == true) {
+                    found = true
+                    break
+                }
+            }
+        } catch (_: Exception) {
+            // 확인할 수 없으면 숨기지 않고 그대로 시도한다(기존 동작 유지).
+            found = true
+        } finally {
+            extractor.release()
+        }
+        audioStreamCache[path] = found
+        return found
     }
 
     private fun buildAudioItem(segment: JSONObject): EditedMediaItem {

@@ -9,6 +9,7 @@ import '../models.dart';
 import '../theme.dart';
 import 'editor_section.dart';
 import 'inspector_panel.dart';
+import 'mobile_toolbar.dart';
 import 'preview_engine.dart';
 import 'preview_panel.dart';
 import 'timeline_view.dart';
@@ -17,6 +18,9 @@ import 'workspace.dart';
 /// 상단 바 키(레이아웃 계약 테스트용).
 const Key editorTopBarKey = ValueKey<String>('editor-top-bar');
 const Key editorTransportKey = ValueKey<String>('editor-transport');
+const Key previewFullscreenKey = ValueKey<String>('editor-preview-fullscreen');
+const Key projectNameKey = ValueKey<String>('editor-project-name');
+const Key qualityBadgeKey = ValueKey<String>('editor-quality-badge');
 
 /// 편집 화면 전체.
 ///
@@ -53,6 +57,9 @@ class _EditorScreenState extends State<EditorScreen> {
   bool get _ownsController => widget.controller == null;
 
   bool get _playing => _engine.isPlaying;
+
+  /// 모바일 전체화면 프리뷰(상단 바·타임라인·툴바를 숨긴다).
+  bool _previewFullscreen = false;
 
   @override
   void initState() {
@@ -194,6 +201,31 @@ class _EditorScreenState extends State<EditorScreen> {
 
   /// 파일 선택 → 프로브 → 클립 추가. 파일 선택기를 쓸 수 없으면 수동 입력.
   Future<void> _addMedia() async {
+    await _pickAndAddMedia();
+  }
+
+  /// 오디오 파일 추가(오디오 트랙). 미디어 선택기에서 파일을 고르면 프로브가
+  /// 종류를 판단해 오디오 클립으로 넣는다.
+  Future<void> _addAudio() async {
+    await _pickAndAddMedia(preferAudio: true);
+  }
+
+  /// 오버레이 트랙에 사진/영상을 얹는다(프로젝트의 첫 오버레이 트랙).
+  Future<void> _addOverlayMedia() async {
+    final TrackView? track = _controller.firstOverlayTrack;
+    if (track == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('오버레이 트랙이 없습니다')));
+      return;
+    }
+    await _pickAndAddMedia(trackId: track.id);
+  }
+
+  Future<void> _pickAndAddMedia({
+    String? trackId,
+    bool preferAudio = false,
+  }) async {
     _pauseForEdit();
     PlatformFile? picked;
     try {
@@ -218,7 +250,20 @@ class _EditorScreenState extends State<EditorScreen> {
       }
       return;
     }
-    await _controller.addMediaFile(path);
+    await _controller.addMediaFile(path, trackId: trackId);
+  }
+
+  /// 상단 바에서 프로젝트 이름을 탭하면 이름을 고친다.
+  Future<void> _renameProject() async {
+    final String current = _controller.state?.summary.name ?? '새 프로젝트';
+    final String? next = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) => _RenameProjectDialog(initial: current),
+    );
+    if (next == null) {
+      return;
+    }
+    await _controller.renameProject(next);
   }
 
   /// 파일 선택기를 쓸 수 없을 때: 경로와 길이를 직접 입력.
@@ -409,13 +454,19 @@ class _EditorScreenState extends State<EditorScreen> {
             summary.clipCount == 0 &&
             summary.subtitleCount == 0;
 
+        if (compact && _previewFullscreen) {
+          return _buildFullscreenPreview(context, state);
+        }
+
         return Scaffold(
           body: SafeArea(
             bottom: false,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
-                _buildTopBar(context, summary),
+                compact
+                    ? _buildMobileTopBar(context, summary)
+                    : _buildTopBar(context, summary),
                 if (_controller.error != null)
                   _MessageBar(
                     message: _controller.error!,
@@ -445,12 +496,29 @@ class _EditorScreenState extends State<EditorScreen> {
                             onExport: _controller.ready ? _openExportSheet : null,
                           )
                         : PreviewPanel(controller: _controller, engine: _engine),
-                    transport: _buildTransport(context, compact),
+                    transport: compact
+                        ? _buildMobileTransport(context)
+                        : _buildTransport(context, compact),
                     timeline: TimelineView(
                       controller: _controller,
                       playhead: _engine.position,
                       onScrubStart: _engine.pause,
+                      onAddClip: _controller.ready ? _addMedia : null,
                     ),
+                    compactFooter: compact
+                        ? MobileToolbar(
+                            controller: _controller,
+                            onAddMedia: _addMedia,
+                            onAddAudio: state == null
+                                ? () {}
+                                : _addAudio,
+                            onAddText: _addText,
+                            onAddOverlay: state == null
+                                ? () {}
+                                : _addOverlayMedia,
+                            onAddSubtitle: _openSubtitlesSheet,
+                          )
+                        : null,
                     inspectorBuilder: (VoidCallback onClose) => InspectorPanel(
                       controller: _controller,
                       onClose: onClose,
@@ -463,6 +531,140 @@ class _EditorScreenState extends State<EditorScreen> {
           ),
         );
       },
+    );
+  }
+
+  /// 전체화면 프리뷰(모바일). 영상 판단을 방해하지 않도록 UI 를 모두 감춘다.
+  Widget _buildFullscreenPreview(BuildContext context, EditorState? state) {
+    return Scaffold(
+      key: previewFullscreenKey,
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: <Widget>[
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => setState(() => _previewFullscreen = false),
+                child: state == null
+                    ? const SizedBox.shrink()
+                    : PreviewPanel(controller: _controller, engine: _engine),
+              ),
+            ),
+            Positioned(
+              top: EditorSpacing.sm,
+              right: EditorSpacing.sm,
+              child: IconButton.filledTonal(
+                tooltip: '전체화면 닫기',
+                onPressed: () => setState(() => _previewFullscreen = false),
+                icon: const Icon(Icons.fullscreen_exit),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------- 모바일 상단 바
+
+  /// Meta Edits 스타일 모바일 상단 바.
+  ///
+  /// 왼쪽: 프로젝트 메뉴(새로 만들기·열기·저장).
+  /// 가운데: 프로젝트 이름(탭하면 이름 변경) + 미저장 점.
+  /// 오른쪽: 해상도 배지(`1080p`) + 보라색 내보내기 버튼 — 화면에서 유일한 primary.
+  Widget _buildMobileTopBar(BuildContext context, ProjectSummary? summary) {
+    final String name = summary?.name ?? 'muud-edits';
+    final bool dirty = summary?.dirty ?? false;
+    return Container(
+      key: editorTopBarKey,
+      height: 56,
+      padding: const EdgeInsets.only(
+        left: EditorSpacing.xs,
+        right: EditorSpacing.sm,
+      ),
+      decoration: const BoxDecoration(
+        color: EditorSurfaces.panel,
+        border: Border(
+          bottom: BorderSide(
+            color: EditorSurfaces.divider,
+            width: EditorStroke.hairline,
+          ),
+        ),
+      ),
+      child: Row(
+        children: <Widget>[
+          _ProjectMenu(
+            density: EditorDensity.touch,
+            ready: _controller.ready,
+            onNew: _newProject,
+            onOpen: _openProject,
+            onSave: _saveProject,
+          ),
+          Expanded(
+            child: InkWell(
+              key: projectNameKey,
+              borderRadius: EditorRadius.smAll,
+              onTap: _controller.ready ? _renameProject : null,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: EditorSpacing.xs,
+                  vertical: EditorSpacing.sm,
+                ),
+                child: Row(
+                  children: <Widget>[
+                    Flexible(
+                      child: Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: EditorText.lead,
+                      ),
+                    ),
+                    if (dirty) ...<Widget>[
+                      const SizedBox(width: EditorSpacing.sm),
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: const BoxDecoration(
+                          color: EditorSurfaces.accent,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Container(
+            key: qualityBadgeKey,
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              color: EditorSurfaces.raised,
+              borderRadius: EditorRadius.smAll,
+              border: Border.all(
+                color: EditorSurfaces.divider,
+                width: EditorStroke.hairline,
+              ),
+            ),
+            child: Text(
+              _controller.qualityLabel,
+              style: EditorText.numeric.copyWith(fontSize: 10),
+            ),
+          ),
+          const SizedBox(width: EditorSpacing.sm),
+          FilledButton.icon(
+            onPressed: _controller.ready ? _openExportSheet : null,
+            icon: const Icon(Icons.ios_share, size: 15),
+            label: const Text('내보내기'),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size(0, 38),
+              padding: const EdgeInsets.symmetric(horizontal: EditorSpacing.md),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -608,6 +810,92 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   // ---------------------------------------------------------------- transport
+
+  /// 모바일 트랜스포트 한 줄: 왼쪽 되돌리기/다시 적용, 가운데 재생 + 현재/전체 시간,
+  /// 오른쪽 전체화면. 줌 바는 없어졌다(타임라인은 핀치 줌).
+  Widget _buildMobileTransport(BuildContext context) {
+    final ProjectSummary? summary = _controller.state?.summary;
+    const EditorDensity density = EditorDensity.touch;
+
+    return Container(
+      key: editorTransportKey,
+      height: 52,
+      padding: const EdgeInsets.symmetric(horizontal: EditorSpacing.xs),
+      decoration: const BoxDecoration(
+        color: EditorSurfaces.panel,
+        border: Border(
+          top: BorderSide(
+            color: EditorSurfaces.divider,
+            width: EditorStroke.hairline,
+          ),
+          bottom: BorderSide(
+            color: EditorSurfaces.divider,
+            width: EditorStroke.hairline,
+          ),
+        ),
+      ),
+      child: Row(
+        children: <Widget>[
+          _BarIconButton(
+            tooltip: '되돌리기',
+            icon: Icons.undo,
+            density: density,
+            iconSize: 20,
+            onPressed: (summary?.canUndo ?? false) ? _controller.undo : null,
+          ),
+          _BarIconButton(
+            tooltip: '다시 적용',
+            icon: Icons.redo,
+            density: density,
+            iconSize: 20,
+            onPressed: (summary?.canRedo ?? false) ? _controller.redo : null,
+          ),
+          Expanded(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: <Widget>[
+                _BarIconButton(
+                  tooltip: _playing ? '일시정지' : '재생',
+                  icon: _playing
+                      ? Icons.pause_circle_filled
+                      : Icons.play_circle_filled,
+                  density: density,
+                  iconSize: 34,
+                  color: EditorSurfaces.accent,
+                  onPressed: _controller.ready ? _togglePlay : null,
+                ),
+                const SizedBox(width: EditorSpacing.xs),
+                Flexible(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _engine.position,
+                      builder:
+                          (BuildContext context, int playheadMs, Widget? _) {
+                            return Text(
+                              '${formatTimecode(playheadMs)} / '
+                              '${formatTimecode(_controller.durationMs)}',
+                              style: EditorText.numeric.copyWith(fontSize: 11),
+                            );
+                          },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _BarIconButton(
+            tooltip: '전체화면',
+            icon: Icons.fullscreen,
+            density: density,
+            iconSize: 22,
+            onPressed: () => setState(() => _previewFullscreen = true),
+          ),
+        ],
+      ),
+    );
+  }
 
   /// 트랜스포트: 왼쪽은 재생(주 행동), 오른쪽은 편집 도구. 좁은 화면에서는
   /// 도구를 오버플로 메뉴로 접어 48dp 타깃을 지킨다.
@@ -811,6 +1099,55 @@ class _BarIconButton extends StatelessWidget {
       ),
       padding: EdgeInsets.zero,
       icon: Icon(icon),
+    );
+  }
+}
+
+/// 프로젝트 이름 변경 대화상자.
+///
+/// [TextEditingController]를 대화상자 자신이 들고 있어야 닫히는 애니메이션 중에
+/// dispose 된 컨트롤러를 다시 쓰는 오류가 없다.
+class _RenameProjectDialog extends StatefulWidget {
+  const _RenameProjectDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_RenameProjectDialog> createState() => _RenameProjectDialogState();
+}
+
+class _RenameProjectDialogState extends State<_RenameProjectDialog> {
+  late final TextEditingController _name = TextEditingController(
+    text: widget.initial,
+  );
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('프로젝트 이름'),
+      content: TextField(
+        controller: _name,
+        autofocus: true,
+        textInputAction: TextInputAction.done,
+        decoration: const InputDecoration(hintText: '예: 상하이 마라톤 하이라이트'),
+        onSubmitted: (String value) => Navigator.of(context).pop(value),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('취소'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_name.text),
+          child: const Text('저장'),
+        ),
+      ],
     );
   }
 }

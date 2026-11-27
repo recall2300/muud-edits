@@ -43,6 +43,7 @@ class EditorWorkspace extends StatefulWidget {
     required this.transport,
     required this.timeline,
     required this.inspectorBuilder,
+    this.compactFooter,
     this.initialTimelineHeight = 206,
     this.initialInspectorWidth = 320,
   });
@@ -60,6 +61,12 @@ class EditorWorkspace extends StatefulWidget {
   /// 인스펙터 내용. [onClose]를 넘기면 패널이 닫기 버튼을 보여 준다.
   final Widget Function(VoidCallback onClose) inspectorBuilder;
 
+  /// 좁은 화면(<768px)에서 타임라인 아래에 붙는 하단 영역(Edits 스타일 툴바 + 인라인 패널).
+  ///
+  /// 좁은 화면은 이 영역이 인스펙터 시트를 **대신한다**(프리뷰를 가리지 않는 하단
+  /// 툴바로 옮겼다). 데스크톱/태블릿에서는 덮어지지 않는다.
+  final Widget? compactFooter;
+
   final double initialTimelineHeight;
   final double initialInspectorWidth;
 
@@ -75,7 +82,6 @@ class _EditorWorkspaceState extends State<EditorWorkspace> {
 
   late double _timelineHeight = widget.initialTimelineHeight;
   late double _inspectorWidth = widget.initialInspectorWidth;
-  late double _sheetHeight = 280;
 
   bool get _hasSelection => widget.controller.selected != null;
 
@@ -198,21 +204,16 @@ class _EditorWorkspaceState extends State<EditorWorkspace> {
   // -------------------------------------------------------------------- 모바일
 
   Widget _buildCompact(BoxConstraints constraints) {
+    // Edits 스타일: 프리뷰가 남는 높이를 모두 쓰고, 타임라인은 슬림하게 고정,
+    // 하단에는 스크롤 툴바(+인라인 패널)가 붙는다.
     final double maxTimelineHeight = math.max(
       120,
-      constraints.maxHeight - _transportHeight - 200,
+      constraints.maxHeight * 0.42,
     );
-    final double timelineHeight = math.min(
-      _timelineHeight,
+    final double timelineHeight = _timelineHeight.clamp(
+      120,
       maxTimelineHeight,
     );
-    // 시트는 화면 맨 아래(타임라인 아래)에 붙는다. 타임라인은 항상 보이므로
-    // 자르는 동안에도 클립 위치를 확인할 수 있다.
-    final double maxSheetHeight = math.max(
-      200,
-      constraints.maxHeight - _transportHeight - timelineHeight - 120,
-    );
-    final double sheetHeight = _sheetHeight.clamp(200, maxSheetHeight);
 
     return Column(
       children: <Widget>[
@@ -229,22 +230,7 @@ class _EditorWorkspaceState extends State<EditorWorkspace> {
           height: timelineHeight,
           child: widget.timeline,
         ),
-        if (_hasSelection)
-          SizedBox(
-            key: inspectorBottomSheetKey,
-            height: sheetHeight,
-            child: _InspectorSheet(
-              onResize: (double deltaY) {
-                setState(() {
-                  _sheetHeight = (_sheetHeight - deltaY).clamp(
-                    200,
-                    maxSheetHeight,
-                  );
-                });
-              },
-              child: widget.inspectorBuilder(_closeInspector),
-            ),
-          ),
+        if (widget.compactFooter != null) widget.compactFooter!,
       ],
     );
   }
@@ -318,44 +304,6 @@ class _EditorResizeHandleState extends State<EditorResizeHandle> {
 }
 
 /// 좁은 화면의 인스펙터. 화면 아래에서 올라오는 시트로 스왑한다.
-class _InspectorSheet extends StatelessWidget {
-  const _InspectorSheet({required this.child, required this.onResize});
-
-  final Widget child;
-  final ValueChanged<double> onResize;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: EditorSurfaces.overlay,
-      elevation: 18,
-      shadowColor: Colors.black,
-      borderRadius: EditorRadius.lgTop,
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        children: <Widget>[
-          GestureDetector(
-            key: inspectorSheetHandleKey,
-            behavior: HitTestBehavior.opaque,
-            onVerticalDragUpdate: (DragUpdateDetails details) =>
-                onResize(details.delta.dy),
-            child: SizedBox(
-              height: EditorDensity.touch.minTarget * 0.6,
-              child: Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: const BoxDecoration(
-                    color: EditorPalette.outlineStrong,
-                    borderRadius: BorderRadius.all(Radius.circular(2)),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          Expanded(child: child),
-        ],
-      ),
-    );
-  }
-}
+///
+/// v0.1.8 부터 좁은 화면은 [EditorWorkspace.compactFooter](Edits 스타일 하단 툴바)를
+/// 쓴다. 이 클래스는 넓은 화면에서 쓰는 사이드 패널 구조를 그대로 재사용할 때만 쓴다.

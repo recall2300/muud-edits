@@ -1186,6 +1186,11 @@ class PreviewEngine extends ChangeNotifier {
     }
   }
 
+  /// 오디오 클립(추출한 소리 포함)은 화면 표면 없이 소리만 재생한다.
+  ///
+  /// 오디오 추출 클립은 원본이 `.mp4` 같은 비디오 컨테이너이고, `video_player` 는
+  /// 그 파일의 오디오 트랙만 따로 열 수 없다. 컨트롤러를 만들되 [buildSurface] 를
+  /// 화면에 붙이지 않으므로 사용자는 소리만 듣는다(영상 트랙은 디코드되지만 표시되지 않는다).
   Future<void> _reconcileAudio(PreviewSelection sel) async {
     final ClipView? clip = sel.audioClip;
     final String? path = sel.audioPath;

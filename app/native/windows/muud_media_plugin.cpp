@@ -209,6 +209,23 @@ bool JsonBool(const json& node, const char* key, bool fallback) {
   return node.at(key).get<bool>();
 }
 
+/// 파일에 오디오 스트림이 있는지 ffprobe 로 확인한다.
+///
+/// 오디오 추출 클립은 원본이 mp4 같은 비디오 컨테이너이므로, `[N:a]` 를 그대로
+/// 쓰면 소리가 없는 파일에서 필터 그래프 전체가 실패한다. 확인할 수 없으면
+/// (ffprobe 없음/실패) 기존처럼 포함해 시도한다.
+bool SourceHasAudioStream(const std::string& path) {
+  std::wstring command = Quote(ToolPath("ffprobe"));
+  command += L" -v error -select_streams a -show_entries stream=index -of csv=p=0 ";
+  command += Quote(Utf8ToWide(path));
+  CaptureResult captured = RunCapture(command);
+  if (!captured.ok) return true;
+  for (char ch : captured.output) {
+    if (ch >= '0' && ch <= '9') return true;
+  }
+  return false;
+}
+
 /// "30000/1001" → 29.97
 double ParseFrameRate(const std::string& text) {
   size_t slash = text.find('/');
@@ -593,10 +610,24 @@ void FfmpegPipeline::RunExport(std::string graph_json, std::string output_path) 
   // 구간이 있으면 뒤 오디오가 앞당겨져 영상과 어긋났다. 지금은 각 세그먼트를
   // adelay 로 제자리에 밀어 놓고, 빈 구간은 무음으로 남긴다.
   std::vector<std::string> audio_labels;
+  std::map<std::string, bool> audio_stream_cache;
   for (const auto& segment : audio_segments) {
     if (JsonBool(segment, "muted", false)) continue;
     const std::string path = JsonString(segment, "source_path");
     if (path.empty()) continue;
+    bool has_audio_stream = true;
+    auto cached = audio_stream_cache.find(path);
+    if (cached == audio_stream_cache.end()) {
+      has_audio_stream = SourceHasAudioStream(path);
+      audio_stream_cache[path] = has_audio_stream;
+    } else {
+      has_audio_stream = cached->second;
+    }
+    if (!has_audio_stream) {
+      EmitState("progress", "preparing", 0, frame_count,
+                "오디오 스트림이 없는 클립은 건너뜁니다: " + path);
+      continue;
+    }
     int index = add_input(path);
     int64_t start = std::max<int64_t>(0, JsonInt(segment, "render_start_ms", 0));
 

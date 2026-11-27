@@ -46,6 +46,9 @@ class EditorController extends ChangeNotifier {
   bool _mediaEngineMissing = false;
   String? _lastProbeSummary;
 
+  /// 같은 파일을 다시 프로브하지 않도록 경로별 결과를 기억한다(오디오 추출 안내에 쓴다).
+  final Map<String, MediaProbe> _probes = <String, MediaProbe>{};
+
   // ------------------------------------------------------------------ getters
 
   EditorState? get state => _state;
@@ -106,6 +109,18 @@ class EditorController extends ChangeNotifier {
   }
 
   String get exportPlatform => _exportPlatform;
+
+  /// 상단 바 배지(`1080p`) — 세로 영상은 짧은 변을 기준으로 부른다.
+  String get qualityLabel {
+    final EditorState? current = _state;
+    if (current == null) {
+      return '1080p';
+    }
+    final int shortSide = current.width < current.height
+        ? current.width
+        : current.height;
+    return '${shortSide <= 0 ? 1080 : shortSide}p';
+  }
 
   int get durationMs => _state?.durationMs ?? 0;
 
@@ -247,7 +262,7 @@ class EditorController extends ChangeNotifier {
   }
 
   /// 임의 커맨드 적용.
-  Future<void> apply(Map<String, dynamic> command) {
+  Future<String?> apply(Map<String, dynamic> command) {
     return _mutate(() => _bridge.applyCommand(stateJson, command));
   }
 
@@ -270,6 +285,151 @@ class EditorController extends ChangeNotifier {
         trackId: hit.track.id,
         clipId: hit.clip.id,
         atTimelineMs: at,
+      ),
+    );
+  }
+
+  /// 지금 선택한 클립을 재생 헤드에서 분할한다(선택한 클립이 없으면 아래 클립).
+  Future<void> splitSelectedAtPlayhead() async {
+    final ({TrackView track, ClipView clip})? hit = selected;
+    if (hit == null) {
+      await splitAtPlayhead();
+      return;
+    }
+    final int at = _playheadMs;
+    if (!hit.clip.contains(at) || at <= hit.clip.offsetMs) {
+      _notice = '재생 헤드를 클립 안으로 옮긴 뒤 나눌 수 있습니다';
+      notifyListeners();
+      return;
+    }
+    await _mutate(
+      () => _bridge.splitClip(
+        stateJson: stateJson,
+        trackId: hit.track.id,
+        clipId: hit.clip.id,
+        atTimelineMs: at,
+      ),
+    );
+  }
+
+  /// 선택한 클립을 원본 바로 뒤에 복제한다.
+  Future<bool> duplicateSelected() async {
+    final ({TrackView track, ClipView clip})? hit = selected;
+    if (hit == null) {
+      _notice = '복제할 클립을 먼저 선택하세요';
+      notifyListeners();
+      return false;
+    }
+    final String? created = await _mutate(
+      () => _bridge.applyCommand(
+        stateJson,
+        Commands.duplicateClip(trackId: hit.track.id, clipId: hit.clip.id),
+      ),
+      selectCreated: true,
+    );
+    if (_error == null && created != null) {
+      _notice = '클립을 복제했습니다';
+      notifyListeners();
+      return true;
+    }
+    return false;
+  }
+
+  /// 프로젝트 이름 변경(상단 바에서 탭).
+  Future<bool> renameProject(String name) async {
+    final String trimmed = name.trim();
+    if (trimmed.isEmpty) {
+      _notice = '프로젝트 이름을 입력하세요';
+      notifyListeners();
+      return false;
+    }
+    if (trimmed == _state?.summary.name) {
+      return true;
+    }
+    await _mutate(
+      () => _bridge.applyCommand(
+        stateJson,
+        Commands.renameProject(name: trimmed),
+      ),
+    );
+    return _error == null;
+  }
+
+  /// 선택한 비디오 클립의 소리를 오디오 트랙으로 분리한다.
+  ///
+  /// * 오디오 스트림이 없다고 프로브된 파일은 한 번도 커맨드를 보내지 않고 안내한다.
+  /// * 원본은 코어에서 볼륨 0.0이 되고, 새 오디오 클립이 선택된다.
+  Future<bool> extractAudioFromSelected() async {
+    final ({TrackView track, ClipView clip})? hit = selected;
+    if (hit == null) {
+      _notice = '오디오를 분리할 비디오 클립을 선택하세요';
+      notifyListeners();
+      return false;
+    }
+    if (hit.clip.kind != 'video') {
+      _notice = '오디오는 비디오 클립에서만 분리할 수 있습니다';
+      notifyListeners();
+      return false;
+    }
+    final String sourcePath = hit.clip.sourcePath;
+    if (sourcePath.trim().isEmpty) {
+      _notice = '소스 파일이 없는 클립입니다';
+      notifyListeners();
+      return false;
+    }
+
+    MediaProbe? probe = _probes[sourcePath];
+    if (probe == null) {
+      probe = await probeFile(sourcePath);
+    }
+    if (probe != null && !probe.hasAudio) {
+      _notice = '이 영상에는 오디오 스트림이 없습니다(무음 영상)';
+      notifyListeners();
+      return false;
+    }
+    final bool mutedSource = hit.clip.volume <= 0.001;
+    await _mutate(
+      () => _bridge.applyCommand(
+        stateJson,
+        Commands.extractAudio(trackId: hit.track.id, clipId: hit.clip.id),
+      ),
+      selectCreated: true,
+    );
+    if (_error != null) {
+      return false;
+    }
+    _notice = mutedSource
+        ? '무음 처리된 영상에서 원본 소리를 분리했습니다'
+        : '오디오를 분리했습니다 · 원본 영상은 무음 처리됨';
+    notifyListeners();
+    return true;
+  }
+
+  /// 텍스트 클립의 문구/크기/색 변경(모두 한 단계로 되돌릴 수 있다).
+  Future<void> setTextClipStyle(
+    ClipView clip, {
+    String? content,
+    double? sizePx,
+    String? color,
+  }) async {
+    final TrackView? track = _trackOf(clip.id);
+    if (track == null) {
+      return;
+    }
+    final String text = (content ?? clip.textContent ?? '').trim();
+    if (text.isEmpty) {
+      _notice = '텍스트를 입력하세요';
+      notifyListeners();
+      return;
+    }
+    await apply(
+      Commands.setClipText(
+        trackId: track.id,
+        clipId: clip.id,
+        content: text,
+        // 지금 스타일을 함께 보내야 문구만 바꿀 때 크기·색이 초기화되지 않는다.
+        sizePx: sizePx ?? clip.textSizePx,
+        color: color ?? clip.textColor,
       ),
     );
   }
@@ -412,18 +572,21 @@ class EditorController extends ChangeNotifier {
   }
 
   /// 미디어 클립 추가(프로브가 붙기 전까지는 길이를 사용자가 지정한다).
-  Future<void> addMediaClip({
+  ///
+  /// [trackId]를 주면 그 트랙에 놓는다(오버레이 트랙에 사진·영상 얹기).
+  Future<String?> addMediaClip({
     required String sourcePath,
     required String kind,
     required int startMs,
     required int endMs,
     int? atMs,
     int? sourceDurationMs,
+    String? trackId,
   }) {
     return _mutate(
       () => _bridge.addMediaClip(
         stateJson: stateJson,
-        trackId: _trackIdForKind(kind),
+        trackId: trackId ?? _trackIdForKind(kind),
         kind: kind,
         sourcePath: sourcePath,
         startMs: startMs,
@@ -437,7 +600,8 @@ class EditorController extends ChangeNotifier {
   /// 파일 경로를 받아 **네이티브 프로브 → 코어 검증 → 클립 추가**까지 처리한다.
   ///
   /// 네이티브 엔진이 없으면(스캐폴딩만 있는 상태) 경고를 남기고 기본 5초로 넣는다.
-  Future<void> addMediaFile(String sourcePath) async {
+  /// [trackId]를 주면 그 트랙에 놓는다.
+  Future<void> addMediaFile(String sourcePath, {String? trackId}) async {
     final MediaProbe? probe = await probeFile(sourcePath);
     final String kind = probe?.clipKind ?? _kindFromExtension(sourcePath);
     final int endMs = probe == null
@@ -456,6 +620,7 @@ class EditorController extends ChangeNotifier {
       startMs: 0,
       endMs: endMs,
       sourceDurationMs: probe?.suggestedEndMs,
+      trackId: trackId,
     );
   }
 
@@ -466,6 +631,7 @@ class EditorController extends ChangeNotifier {
       final String normalized = await _bridge.probeMediaInfo(jsonEncode(raw));
       final MediaProbe probe = MediaProbe.fromEnvelope(normalized);
       _mediaEngineMissing = false;
+      _probes[path] = probe;
       return probe;
     } on MediaPlatformException catch (error) {
       _mediaEngineMissing = error.isEngineMissing;
@@ -542,19 +708,9 @@ class EditorController extends ChangeNotifier {
     return apply(Commands.removeSubtitle(id: id));
   }
 
-  /// 텍스트 클립의 문구 바꾸기.
+  /// 텍스트 클립의 문구 바꾸기(지금 크기·색은 유지한다).
   Future<void> setTextClipContent(ClipView clip, String content) async {
-    final TrackView? track = _trackOf(clip.id);
-    if (track == null) {
-      return;
-    }
-    await apply(
-      Commands.setClipText(
-        trackId: track.id,
-        clipId: clip.id,
-        content: content,
-      ),
-    );
+    await setTextClipStyle(clip, content: content);
   }
 
   TrackView? _trackOf(String clipId) {
@@ -1060,25 +1216,33 @@ class EditorController extends ChangeNotifier {
     return current.tracks.isEmpty ? '' : current.tracks.first.id;
   }
 
-  Future<void> _mutate(
+  Future<String?> _mutate(
     Future<String> Function() call, {
     String? successNotice,
+    bool selectCreated = false,
   }) async {
     if (_state == null) {
-      return;
+      return null;
     }
     _busy = true;
     _error = null;
     notifyListeners();
+    String? created;
     try {
       final String raw = await call();
       final EditorState next = EditorState.fromEnvelope(raw);
+      created = EditorState.createdIdOf(raw);
       _state = next;
       if (_playheadMs > next.durationMs) {
         _playheadMs = next.durationMs;
       }
       if (_selectedClipId != null && next.findClip(_selectedClipId!) == null) {
         _selectedClipId = null;
+      }
+      if (selectCreated &&
+          created != null &&
+          next.findClip(created) != null) {
+        _selectedClipId = created;
       }
       if (successNotice != null) {
         _notice = successNotice;
@@ -1091,5 +1255,6 @@ class EditorController extends ChangeNotifier {
       _busy = false;
       notifyListeners();
     }
+    return created;
   }
 }

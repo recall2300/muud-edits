@@ -9,6 +9,7 @@ import '../models.dart';
 import '../theme.dart';
 
 const double _gutterWidth = 112;
+const double _compactRailWidth = 48;
 const double _rowHeight = 44;
 const double _rowGap = 6;
 const double _rulerHeight = 26;
@@ -54,6 +55,7 @@ class TimelineView extends StatefulWidget {
     required this.controller,
     this.playhead,
     this.onScrubStart,
+    this.onAddClip,
   });
 
   final EditorController controller;
@@ -63,6 +65,9 @@ class TimelineView extends StatefulWidget {
 
   /// 사용자가 타임라인을 만지기 시작했을 때(재생 중이면 멈추게).
   final VoidCallback? onScrubStart;
+
+  /// 비디오 트랙 오른쪽 끝의 `+` 버튼을 누를 때(미디어 추가).
+  final VoidCallback? onAddClip;
 
   @override
   State<TimelineView> createState() => _TimelineViewState();
@@ -316,12 +321,21 @@ class _TimelineViewState extends State<TimelineView> {
       _handleGutterTap(metrics, state, local);
       return;
     }
+    // 비디오 트랙 끝의 `+`(클립 추가).
+    if (_addClipRect(state, metrics).inflate(4).contains(local)) {
+      widget.onAddClip?.call();
+      return;
+    }
     final ({TrackView track, ClipView clip, ClipZone zone})? hit =
         metrics.hitTestClip(state, local);
     widget.controller.selectClip(hit?.clip.id);
     widget.onScrubStart?.call();
     widget.controller.setPlayhead(metrics.timeAt(local.dx));
   }
+
+  /// 비디오 트랙 끝에 그리는 `+` 버튼 사각형(그리기와 히트 테스트 공용).
+  Rect _addClipRect(EditorState state, TimelineMetrics metrics) =>
+      timelineAddClipRect(state, metrics);
 
   void _handleGutterTap(
     TimelineMetrics metrics,
@@ -371,11 +385,13 @@ class _TimelineViewState extends State<TimelineView> {
 
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
-        // 좁은(터치) 화면에서는 타임라인 툴바도 48dp 타깃을 확보한다.
-        final bool touch = constraints.maxWidth < EditorBreakpoints.compact;
-        final double toolbarHeight = touch
-            ? EditorDensity.touch.minTarget
-            : _toolbarHeight;
+        // 좁은(터치) 화면에서는 Edits 처럼 얇은 아이콘 레일 + 핀치 줌만 쓴다.
+        final bool compact =
+            constraints.maxWidth < EditorBreakpoints.compact;
+        final bool touch = compact;
+        final double toolbarHeight = compact
+            ? 0
+            : (touch ? EditorDensity.touch.minTarget : _toolbarHeight);
         final double contentHeight =
             _rulerHeight +
             state.tracks.length * (_rowHeight + _rowGap) +
@@ -393,6 +409,8 @@ class _TimelineViewState extends State<TimelineView> {
           trackCount: state.tracks.length,
           zoom: _zoom,
           scrollMs: _scrollMs,
+          railWidth: compact ? _compactRailWidth : _gutterWidth,
+          compact: compact,
         );
         _metrics = metrics;
         final ValueListenable<int> source =
@@ -438,14 +456,15 @@ class _TimelineViewState extends State<TimelineView> {
 
         return Column(
           children: <Widget>[
-            _ZoomBar(
-              height: toolbarHeight,
-              touch: touch,
-              zoom: _zoom,
-              onZoomIn: () => _applyZoom(_zoom * 1.5),
-              onZoomOut: () => _applyZoom(_zoom / 1.5),
-              onFit: _fit,
-            ),
+            if (!compact)
+              _ZoomBar(
+                height: toolbarHeight,
+                touch: touch,
+                zoom: _zoom,
+                onZoomIn: () => _applyZoom(_zoom * 1.5),
+                onZoomOut: () => _applyZoom(_zoom / 1.5),
+                onFit: _fit,
+              ),
             Expanded(
               child: contentHeight > viewportHeight
                   ? SingleChildScrollView(
@@ -651,9 +670,11 @@ class TimelineMetrics {
     required this.trackCount,
     double zoom = 1.0,
     double scrollMs = 0,
+    this.railWidth = _gutterWidth,
+    this.compact = false,
   }) : _zoom = zoom,
        contentScrollMs = scrollMs {
-    final double usable = math.max(width - _gutterWidth - _rightPad, 60);
+    final double usable = math.max(width - railWidth - _rightPad, 60);
     basePxPerMs = usable / totalSpanMs;
     pxPerMs = basePxPerMs * _zoom;
     _scrollMs = scrollMs.clamp(0.0, maxScrollMs);
@@ -666,6 +687,13 @@ class TimelineMetrics {
   final double height;
   final int durationMs;
   final int trackCount;
+
+  /// 왼쪽 트랙 레일 폭. Edits 스타일 좁은 화면은 48, 데스크톱은 112.
+  final double railWidth;
+
+  /// 좁은 화면 레이아웃인가(레일에 이름을 그리지 않고 토글만 둔다).
+  final bool compact;
+
   final double _zoom;
 
   /// 생성 시 요청한 스크롤(클램프 전 값 보관용).
@@ -692,9 +720,9 @@ class TimelineMetrics {
   /// 화면에 보이는 시간 폭(ms).
   double get visibleSpanMs => contentWidth / pxPerMs;
 
-  double get laneLeft => _gutterWidth;
+  double get laneLeft => railWidth;
 
-  double get contentWidth => math.max(width - _gutterWidth - _rightPad, 60);
+  double get contentWidth => math.max(width - railWidth - _rightPad, 60);
 
   double xForTime(int ms) => laneLeft + (ms - _scrollMs) * pxPerMs;
 
@@ -721,6 +749,12 @@ class TimelineMetrics {
 
   /// 거터의 트랙 토글 아이콘 위치(그리기와 히트 테스트가 같은 값을 쓴다).
   Rect toggleRect(int index, TrackToggle toggle) {
+    if (compact) {
+      // 좁은 레일: 3개 토글을 15px 간격으로 한 줄에 둔다.
+      final double top = topForTrack(index) + _rowHeight - 17;
+      final double left = 2 + toggle.index * 15;
+      return Rect.fromLTWH(left, top, 14, 16);
+    }
     final double top = topForTrack(index) + _rowHeight - 20;
     final double left = 26 + toggle.index * 24;
     return Rect.fromLTWH(left, top, 20, 16);
@@ -800,6 +834,23 @@ class TimelineMetrics {
   }
 }
 
+/// 비디오 트랙 끝에 그리는 `+`(클립 추가) 버튼 자리. 그리기와 히트 테스트 공용.
+Rect timelineAddClipRect(EditorState state, TimelineMetrics metrics) {
+  final int index = state.tracks.indexWhere(
+    (TrackView track) => track.kind == 'video' || track.kind == 'image',
+  );
+  if (index < 0) {
+    return Rect.zero;
+  }
+  final Rect lane = metrics.laneRect(index);
+  final int endMs = state.tracks[index].durationMs;
+  final double desired = endMs > 0
+      ? metrics.xForTime(endMs) + 10
+      : metrics.laneLeft + 10;
+  final double x = desired.clamp(metrics.laneLeft + 2, metrics.width - 30);
+  return Rect.fromLTWH(x, lane.center.dy - 13, 26, 26);
+}
+
 /// 클립·눈금·자막 — 플레이헤드와 무관한 정적인 층.
 class _TimelinePainter extends CustomPainter {
   _TimelinePainter({
@@ -831,7 +882,10 @@ class _TimelinePainter extends CustomPainter {
 
   void _paintTrackLanes(Canvas canvas) {
     final Paint gutter = Paint()..color = EditorPalette.surface;
-    canvas.drawRect(Rect.fromLTWH(0, 0, _gutterWidth, metrics.height), gutter);
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, metrics.railWidth, metrics.height),
+      gutter,
+    );
 
     for (int index = 0; index < state.tracks.length; index++) {
       final TrackView track = state.tracks[index];
@@ -855,21 +909,25 @@ class _TimelinePainter extends CustomPainter {
 
       final Color accent = EditorPalette.forTrackKind(track.kind);
       final Paint dot = Paint()..color = accent;
-      canvas.drawCircle(Offset(14, lane.top + 12), 4, dot);
+      if (metrics.compact) {
+        // Edits 스타일: 긴 이름 대신 색 점만 남긴다(레이블은 클립이 말한다).
+        canvas.drawCircle(Offset(14, lane.top + 14), 4.5, dot);
+      } else {
+        canvas.drawCircle(Offset(14, lane.top + 12), 4, dot);
+        _drawText(
+          canvas,
+          track.name,
+          Offset(26, lane.top + 5),
+          metrics.railWidth - 34,
+          TextStyle(
+            color: track.hidden ? EditorPalette.textMuted : EditorPalette.text,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        );
+      }
 
-      _drawText(
-        canvas,
-        track.name,
-        Offset(26, lane.top + 5),
-        _gutterWidth - 34,
-        TextStyle(
-          color: track.hidden ? EditorPalette.textMuted : EditorPalette.text,
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
-      );
-
-      // 트랙 토글: 음소거 · 숨김 · 잠금
+      // 트랙 상토글: 음소거 · 숨김 · 잠금
       _paintToggle(
         canvas,
         metrics.toggleRect(index, TrackToggle.mute),
@@ -889,6 +947,42 @@ class _TimelinePainter extends CustomPainter {
         active: track.locked,
       );
     }
+
+    _paintAddClipButton(canvas);
+  }
+
+  /// 비디오 트랙 끝의 `+` — 바로 미디어를 더할 수 있다.
+  void _paintAddClipButton(Canvas canvas) {
+    final Rect rect = timelineAddClipRect(state, metrics);
+    if (rect.isEmpty || rect.left > metrics.width) {
+      return;
+    }
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(6)),
+      Paint()..color = EditorPalette.surfaceRaised,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect.deflate(0.5), const Radius.circular(6)),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = EditorPalette.outlineStrong,
+    );
+    final Paint plus = Paint()
+      ..color = EditorPalette.textSecondary
+      ..strokeWidth = 1.6
+      ..strokeCap = StrokeCap.round;
+    final Offset center = rect.center;
+    canvas.drawLine(
+      Offset(center.dx - 5, center.dy),
+      Offset(center.dx + 5, center.dy),
+      plus,
+    );
+    canvas.drawLine(
+      Offset(center.dx, center.dy - 5),
+      Offset(center.dx, center.dy + 5),
+      plus,
+    );
   }
 
   void _paintToggle(
@@ -976,17 +1070,23 @@ class _TimelinePainter extends CustomPainter {
             rounded.deflate(0.5),
             Paint()
               ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.6
-              ..color = EditorPalette.text,
+              ..strokeWidth = 2.2
+              ..color = EditorPalette.accent,
           );
-          // 좌/우 트림 핸들
+          // 양쪽 트림 핸들(잡기 쉬운 사각 손잡이)
           final Paint handle = Paint()..color = Colors.white;
-          canvas.drawRect(
-            Rect.fromLTWH(rect.left + 1, rect.top + 6, 3, rect.height - 12),
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(
+              Rect.fromLTWH(rect.left + 1.5, rect.center.dy - 10, 4, 20),
+              const Radius.circular(2),
+            ),
             handle,
           );
-          canvas.drawRect(
-            Rect.fromLTWH(rect.right - 4, rect.top + 6, 3, rect.height - 12),
+          canvas.drawRRect(
+            RRect.fromRectAndRadius(
+              Rect.fromLTWH(rect.right - 5.5, rect.center.dy - 10, 4, 20),
+              const Radius.circular(2),
+            ),
             handle,
           );
         }
@@ -1048,8 +1148,8 @@ class _TimelinePainter extends CustomPainter {
     _drawText(
       canvas,
       '자막',
-      Offset(26, top + 8),
-      _gutterWidth - 32,
+      Offset(metrics.compact ? 4 : 26, top + 8),
+      metrics.railWidth - 32,
       const TextStyle(color: EditorPalette.textMuted, fontSize: 10),
     );
 
@@ -1087,9 +1187,9 @@ class _TimelinePainter extends CustomPainter {
     final Paint rulerBg = Paint()..color = EditorPalette.surface;
     canvas.drawRect(
       Rect.fromLTWH(
-        _gutterWidth,
+        metrics.railWidth,
         0,
-        metrics.width - _gutterWidth,
+        metrics.width - metrics.railWidth,
         _rulerHeight,
       ),
       rulerBg,
@@ -1104,7 +1204,7 @@ class _TimelinePainter extends CustomPainter {
 
     for (int ms = math.max(0, first); ms <= last; ms += step) {
       final double x = metrics.xForTime(ms);
-      if (x < _gutterWidth || x > metrics.width) {
+      if (x < metrics.railWidth || x > metrics.width) {
         continue;
       }
       canvas.drawLine(
@@ -1126,7 +1226,7 @@ class _TimelinePainter extends CustomPainter {
     _drawText(
       canvas,
       '미디어를 추가하면 여기에 클립이 표시됩니다',
-      Offset(_gutterWidth + 16, _rulerHeight + 8),
+      Offset(metrics.laneLeft + 44, _rulerHeight + 8),
       metrics.contentWidth - 32,
       const TextStyle(color: EditorPalette.textMuted, fontSize: 11),
     );
@@ -1171,6 +1271,8 @@ class _TimelinePainter extends CustomPainter {
         oldDelegate.selectedClipId != selectedClipId ||
         oldDelegate.drag != drag ||
         oldDelegate.metrics.pxPerMs != metrics.pxPerMs ||
+        oldDelegate.metrics.railWidth != metrics.railWidth ||
+        oldDelegate.metrics.compact != metrics.compact ||
         oldDelegate.metrics.scrollMs != metrics.scrollMs ||
         oldDelegate.metrics.width != metrics.width ||
         oldDelegate.metrics.height != metrics.height;
@@ -1188,7 +1290,7 @@ class _PlayheadPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final double x = metrics.xForTime(position.value);
-    if (x < _gutterWidth - 1 || x > metrics.width) {
+    if (x < metrics.railWidth - 1 || x > metrics.width) {
       return;
     }
     final Paint line = Paint()
@@ -1208,6 +1310,8 @@ class _PlayheadPainter extends CustomPainter {
   bool shouldRepaint(covariant _PlayheadPainter oldDelegate) {
     return oldDelegate.position != position ||
         oldDelegate.metrics.pxPerMs != metrics.pxPerMs ||
+        oldDelegate.metrics.railWidth != metrics.railWidth ||
+        oldDelegate.metrics.compact != metrics.compact ||
         oldDelegate.metrics.scrollMs != metrics.scrollMs ||
         oldDelegate.metrics.width != metrics.width ||
         oldDelegate.metrics.height != metrics.height;

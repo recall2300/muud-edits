@@ -28,6 +28,8 @@
 ```
 
 * `outcome`는 편집 호출에만, `created_id`는 id를 발급하는 호출에만 온다.
+  v0.1.8부터 `extract_audio`/`duplicate_clip` 처럼 커맨드가 새 클립을 만드는 경우에도
+  `outcome.created_clip_id` 와 최상위 `created_id` 가 함께 온다(UI가 결과 클립을 선택).
 * `summary`는 UI 헤더/툴바용 요약이다(프로젝트 전체를 다시 계산하지 않게).
 
 실패:
@@ -134,9 +136,26 @@
 { "type": "update_subtitle", "id": "sub-0002", "patch": { "text": "안녕하세요" } }
 { "type": "remove_subtitle", "id": "sub-0002" }
 
+// 프로젝트 이름(v0.1.8)
+{ "type": "rename_project", "name": "상하이 마라톤 하이라이트" }
+
+// 비디오 클립의 소리를 오디오 트랙으로 분리(v0.1.8)
+//  · 원본과 같은 source_path/트림/배속/타임라인 위치의 AudioClip 을 만든다.
+//  · to_track_id 가 없으면 자리가 빈 첫 오디오 트랙, 없으면 새 오디오 트랙을 만든다.
+//  · 원본 VideoClip 은 volume 0.0 으로 낮춰 소리가 겹치지 않게 한다.
+//  · 내부적으로 Batch 로 적용되므로 되돌리기 한 번이면 함께 복구된다.
+//  · 응답의 outcome.created_clip_id(및 최상위 created_id)에 새 오디오 클립 id 가 온다.
+{ "type": "extract_audio", "track_id": "trk-0001", "clip_id": "clp-0004" }
+
+// 클립 복제(원본 바로 뒤, v0.1.8). 새 id 는 코어가 발급한다.
+{ "type": "duplicate_clip", "track_id": "trk-0001", "clip_id": "clp-0004" }
+
 // 묶음(원자적, 실패 시 아무것도 남지 않음)
 { "type": "batch", "commands": [ /* … */ ] }
 ```
+
+> 텍스트 클립도 `split_clip` 으로 나눌 수 있다(v0.1.8). `extract_audio` 는 비디오
+> 클립에만 쓸 수 있고, 텍스트/오디오 클립에는 `unsupported` 오류를 돌려준다.
 
 ### 값 범위
 

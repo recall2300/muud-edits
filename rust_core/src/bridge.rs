@@ -415,6 +415,11 @@ fn envelope(editor: &Editor, outcome: Option<CommandOutcome>) -> String {
         "summary": editor.summary(),
     });
     if let Some(outcome) = outcome {
+        // 새 클립을 만든 커맨드(extract_audio/duplicate_clip)는 UI 가 결과 클립을
+        // 바로 선택할 수 있도록 `created_id` 를 최상위에도 같이 둔다.
+        if let Some(created) = outcome.created_clip_id.clone() {
+            value["created_id"] = json!(created);
+        }
         value["outcome"] = serde_json::to_value(outcome).unwrap_or(Value::Null);
     }
     value.to_string()
@@ -676,6 +681,102 @@ mod tests {
             add_media_clip(&state, &track_id, "text", "/x", 0, 1_000, None, None).unwrap_err();
         let value: Value = serde_json::from_str(&bad).expect("json");
         assert_eq!(value["error"]["code"], "bad_kind");
+    }
+
+    #[test]
+    fn extract_audio_bridge_returns_created_clip_and_mixes_it() {
+        let created = state_from(create_project("오디오 추출", 1080, 1920, 30));
+        let state = created["state"].to_string();
+        let video_track = created["state"]["project"]["tracks"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let added = state_from(add_media_clip(
+            &state,
+            &video_track,
+            "video",
+            "/media/a.mp4",
+            0,
+            4_000,
+            None,
+            Some(4_000),
+        ));
+        let clip_id = added["created_id"].as_str().unwrap().to_string();
+        let with_clip = added["state"].to_string();
+
+        let command = json!({
+            "type": "extract_audio",
+            "track_id": video_track,
+            "clip_id": clip_id,
+        })
+        .to_string();
+        let extracted = state_from(apply_command(&with_clip, &command));
+        assert_eq!(extracted["ok"], true);
+        assert_eq!(extracted["outcome"]["label"], "extract_audio");
+        let audio_id = extracted["created_id"]
+            .as_str()
+            .expect("오디오 클립 id")
+            .to_string();
+        assert!(audio_id.starts_with("clp-"));
+        assert_eq!(extracted["outcome"]["created_clip_id"], audio_id.as_str());
+
+        let tracks = extracted["state"]["project"]["tracks"].as_array().unwrap();
+        assert_eq!(tracks[1]["clips"].as_array().unwrap().len(), 1);
+        assert_eq!(tracks[1]["clips"][0]["kind"], "audio");
+        assert_eq!(tracks[0]["clips"][0]["volume"], 0.0);
+
+        // 렌더 그래프에도 오디오가 한 번만 들어간다(원본은 무음).
+        let graph_state = extracted["state"].to_string();
+        let graph = state_from(render_graph(&graph_state, "", "android"));
+        let audio_segments = graph["graph"]["audio_segments"].as_array().unwrap();
+        assert_eq!(audio_segments.len(), 1);
+        assert_eq!(audio_segments[0]["from_video_track"], false);
+        assert_eq!(audio_segments[0]["source_path"], "/media/a.mp4");
+    }
+
+    #[test]
+    fn duplicate_and_rename_through_bridge_keep_single_step_undo() {
+        let created = state_from(create_project("이름", 1080, 1920, 30));
+        let mut state = created["state"].to_string();
+        let track_id = created["state"]["project"]["tracks"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let added = state_from(add_media_clip(
+            &state,
+            &track_id,
+            "video",
+            "/media/a.mp4",
+            0,
+            1_000,
+            None,
+            Some(1_000),
+        ));
+        let clip_id = added["created_id"].as_str().unwrap().to_string();
+        state = added["state"].to_string();
+
+        let renamed = state_from(apply_command(
+            &state,
+            &json!({ "type": "rename_project", "name": "상하이 마라톤" }).to_string(),
+        ));
+        assert_eq!(renamed["summary"]["name"], "상하이 마라톤");
+        state = renamed["state"].to_string();
+
+        let duplicated = state_from(apply_command(
+            &state,
+            &json!({"type": "duplicate_clip", "track_id": track_id, "clip_id": clip_id})
+                .to_string(),
+        ));
+        assert_eq!(duplicated["summary"]["clip_count"], 2);
+        assert!(duplicated["created_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("clp-"));
+
+        let undone = state_from(undo(&duplicated["state"].to_string()));
+        assert_eq!(undone["summary"]["clip_count"], 1);
+        let undone = state_from(undo(&undone["state"].to_string()));
+        assert_eq!(undone["summary"]["name"], "이름");
     }
 
     #[test]

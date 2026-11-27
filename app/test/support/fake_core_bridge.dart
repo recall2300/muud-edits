@@ -151,8 +151,139 @@ class FakeCoreBridge implements CoreBridge {
             .cast<String, dynamic>();
         _addClip('${command['track_id']}', clip);
         return _envelope(createdId: '${clip['id']}');
+      case 'set_clip_volume':
+      case 'set_clip_speed':
+      case 'set_clip_opacity':
+      case 'set_clip_fades':
+      case 'set_clip_enabled':
+        _push('클립 속성');
+        _setClipFields(command);
+        return _envelope();
+      case 'rename_project':
+        _push('이름 변경');
+        _name = '${command['name']}'.trim();
+        return _envelope();
+      case 'extract_audio':
+        return _extractAudio(command);
+      case 'duplicate_clip':
+        return _duplicateClip(command);
       default:
         throw BridgeException('bad_command', '지원하지 않는 커맨드: $type');
+    }
+  }
+
+  /// 코어의 `ExtractAudio` 최소 동작: 오디오 트랙에 같은 구간의 클립을 만들고 원본을 무음.
+  String _extractAudio(Map<String, dynamic> command) {
+    final ({Map<String, dynamic> track, Map<String, dynamic> clip})? hit =
+        _findClipAnywhere('${command['clip_id']}');
+    if (hit == null) {
+      throw BridgeException('clip_not_found', '클립을 찾지 못했습니다');
+    }
+    if (hit.clip['kind'] != 'video') {
+      throw BridgeException('unsupported', '오디오는 비디오 클립에서만 분리할 수 있습니다');
+    }
+    _push('오디오 추출');
+    final int offset = hit.clip['timeline_offset_ms'] as int;
+    final int duration =
+        ((hit.clip['end_ms'] as int) - (hit.clip['start_ms'] as int)) ~/
+        ((hit.clip['speed'] as num?)?.toDouble() ?? 1).round().clamp(1, 100);
+    Map<String, dynamic>? target;
+    for (final Map<String, dynamic> track in _tracks) {
+      if (track['kind'] != 'audio' || track['locked'] == true) {
+        continue;
+      }
+      final bool free = (track['clips'] as List).every(
+        (dynamic raw) =>
+            (raw as Map)['timeline_offset_ms'] as int >= offset + duration ||
+            (raw['timeline_offset_ms'] as int) +
+                    ((raw['end_ms'] as int) - (raw['start_ms'] as int)) <=
+                offset,
+      );
+      if (free) {
+        target = track;
+        break;
+      }
+    }
+    if (target == null) {
+      final Map<String, dynamic> created = _track('audio');
+      created['id'] = _mint('trk');
+      created['name'] = '오디오 ${_tracks.length}';
+      _tracks.add(created);
+      target = created;
+    }
+    final String audioId = _mint('clp');
+    _addClip(target['id'] as String, <String, dynamic>{
+      'id': audioId,
+      'kind': 'audio',
+      'source_path': hit.clip['source_path'],
+      'start_ms': hit.clip['start_ms'],
+      'end_ms': hit.clip['end_ms'],
+      'timeline_offset_ms': offset,
+      'speed': hit.clip['speed'],
+      'volume': 1,
+      'opacity': 1,
+      'enabled': true,
+      if (hit.clip['source_duration_ms'] != null)
+        'source_duration_ms': hit.clip['source_duration_ms'],
+    });
+    hit.clip['volume'] = 0.0;
+    return _envelope(createdId: audioId, action: 'apply', outcomeLabel: 'extract_audio');
+  }
+
+  /// 코어의 `DuplicateClip` 최소 동작: 원본 바로 뒤에 복사본을 놓는다.
+  String _duplicateClip(Map<String, dynamic> command) {
+    final ({Map<String, dynamic> track, Map<String, dynamic> clip})? hit =
+        _findClipAnywhere('${command['clip_id']}');
+    if (hit == null) {
+      throw BridgeException('clip_not_found', '클립을 찾지 못했습니다');
+    }
+    _push('클립 복제');
+    final String newId = _mint('clp');
+    final Map<String, dynamic> copy = <String, dynamic>{
+      ...hit.clip,
+      'id': newId,
+      'timeline_offset_ms':
+          (hit.clip['timeline_offset_ms'] as int) +
+          ((hit.clip['end_ms'] as int) - (hit.clip['start_ms'] as int)) ~/
+              ((hit.clip['speed'] as num?)?.toDouble() ?? 1)
+                  .round()
+                  .clamp(1, 100),
+    };
+    _addClip(hit.track['id'] as String, copy);
+    return _envelope(createdId: newId, action: 'apply', outcomeLabel: 'duplicate_clip');
+  }
+
+  ({Map<String, dynamic> track, Map<String, dynamic> clip})? _findClipAnywhere(
+    String clipId,
+  ) {
+    for (final Map<String, dynamic> track in _tracks) {
+      for (final dynamic raw in (track['clips'] as List)) {
+        final Map<String, dynamic> clip = (raw as Map).cast<String, dynamic>();
+        if (clip['id'] == clipId) {
+          return (track: track, clip: clip);
+        }
+      }
+    }
+    return null;
+  }
+
+  void _setClipFields(Map<String, dynamic> command) {
+    final ({Map<String, dynamic> track, Map<String, dynamic> clip})? hit =
+        _findClipAnywhere('${command['clip_id']}');
+    if (hit == null) {
+      return;
+    }
+    for (final String key in <String>[
+      'speed',
+      'volume',
+      'opacity',
+      'fade_in_ms',
+      'fade_out_ms',
+      'enabled',
+    ]) {
+      if (command[key] != null) {
+        hit.clip[key] = command[key];
+      }
     }
   }
 

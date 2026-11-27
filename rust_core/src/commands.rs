@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::EditError;
 use crate::ids::{ClipId, SubtitleId, TrackId};
-use crate::model::{Clip, ClipKind, Project, TextOverlay, Track};
+use crate::model::{Clip, ClipKind, Project, TextOverlay, Track, TrackKind};
 use crate::subtitles::{SubtitleItem, SubtitlePatch};
 use crate::timeline;
 
@@ -126,6 +126,31 @@ pub enum EditCommand {
     },
     /// 자막 삭제.
     RemoveSubtitle { id: SubtitleId },
+    /// 프로젝트 이름 변경.
+    RenameProject { name: String },
+    /// 비디오 클립의 소리를 별도 오디오 클립으로 분리한다.
+    ///
+    /// * 원본과 같은 소스 경로·트림 구간·배속·타임라인 위치를 가진 `AudioClip`을
+    ///   `to_track_id`(없으면 자리가 비어 있는 첫 오디오 트랙, 그것도 없으면 새
+    ///   오디오 트랙)에 놓는다.
+    /// * 원본 비디오 클립은 볼륨 0.0으로 낮춰 소리가 두 번 들리지 않게 한다.
+    /// * 여러 커맨드를 묶은 한 단계(`Batch`)로 적용되므로 되돌리기 한 번이면
+    ///   오디오 클립 삭제·원본 볼륨 복구가 함께 일어난다.
+    ExtractAudio {
+        track_id: TrackId,
+        clip_id: ClipId,
+        #[serde(default)]
+        to_track_id: Option<TrackId>,
+        #[serde(default)]
+        new_clip_id: Option<ClipId>,
+    },
+    /// 클립 복제(원본 바로 뒤에 같은 클립을 놓는다).
+    DuplicateClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+        #[serde(default)]
+        new_clip_id: Option<ClipId>,
+    },
     /// 여러 커맨드를 원자적으로 적용(역순 역 커맨드 묶음으로 되돌린다).
     Batch { commands: Vec<EditCommand> },
 }
@@ -152,6 +177,9 @@ impl EditCommand {
             EditCommand::AddSubtitle { .. } => "add_subtitle",
             EditCommand::UpdateSubtitle { .. } => "update_subtitle",
             EditCommand::RemoveSubtitle { .. } => "remove_subtitle",
+            EditCommand::RenameProject { .. } => "rename_project",
+            EditCommand::ExtractAudio { .. } => "extract_audio",
+            EditCommand::DuplicateClip { .. } => "duplicate_clip",
             EditCommand::Batch { .. } => "batch",
         }
     }
@@ -169,7 +197,9 @@ impl EditCommand {
             | EditCommand::SetClipOpacity { track_id, .. }
             | EditCommand::SetClipEnabled { track_id, .. }
             | EditCommand::SetClipText { track_id, .. }
-            | EditCommand::SetClipFades { track_id, .. } => Some(track_id.to_string()),
+            | EditCommand::SetClipFades { track_id, .. }
+            | EditCommand::ExtractAudio { track_id, .. }
+            | EditCommand::DuplicateClip { track_id, .. } => Some(track_id.to_string()),
             EditCommand::AddSubtitle { item } => Some(item.id.to_string()),
             EditCommand::UpdateSubtitle { id, .. } | EditCommand::RemoveSubtitle { id } => {
                 Some(id.to_string())
@@ -178,6 +208,7 @@ impl EditCommand {
             EditCommand::RemoveTrack { track_id }
             | EditCommand::RenameTrack { track_id, .. }
             | EditCommand::SetTrackState { track_id, .. } => Some(track_id.to_string()),
+            EditCommand::RenameProject { .. } => None,
             EditCommand::Batch { .. } => None,
         }
     }
@@ -406,9 +437,7 @@ impl EditCommand {
                 right_clip_id,
             } => {
                 let current = read_clip(project, &track_id, &clip_id)?;
-                if current.kind == ClipKind::Text {
-                    return Err(EditError::Unsupported("텍스트 클립은 분할할 수 없습니다"));
-                }
+                // 텍스트 클립도 같은 계산으로 나뉜다(소스 대신 타임라인 길이를 쓴다).
                 let point = timeline::split_point(&current, at_timeline_ms)?;
 
                 let mut left = current.clone();
@@ -578,6 +607,163 @@ impl EditCommand {
                 })
             }
 
+            EditCommand::RenameProject { name } => {
+                let next = name.trim().to_string();
+                if next.is_empty() {
+                    return Err(EditError::Invalid("프로젝트 이름이 비어 있습니다".into()));
+                }
+                let previous = project.name.clone();
+                project.name = next;
+                Ok(EditCommand::RenameProject { name: previous })
+            }
+
+            EditCommand::ExtractAudio {
+                track_id,
+                clip_id,
+                to_track_id,
+                new_clip_id,
+            } => {
+                let current = read_clip(project, &track_id, &clip_id)?;
+                if current.kind != ClipKind::Video {
+                    return Err(EditError::Unsupported(
+                        "오디오는 비디오 클립에서만 분리할 수 있습니다",
+                    ));
+                }
+                if current.source_path.trim().is_empty() {
+                    return Err(EditError::Invalid(
+                        "소스 경로가 없는 클립에서는 오디오를 분리할 수 없습니다".into(),
+                    ));
+                }
+                // 원본 트랙이 잠겨 있으면 뒤에서 볼륨을 낮출 수 없으므로 먼저 검사한다.
+                project.track_editable(&track_id)?;
+
+                let start = current.timeline_offset_ms;
+                let end = current.timeline_end_ms();
+                let duration_ms = current.timeline_duration_ms();
+
+                let mut commands: Vec<EditCommand> = Vec::new();
+                let target_id = match to_track_id {
+                    Some(id) => {
+                        let track = project.track_editable(&id)?;
+                        if track.kind != TrackKind::Audio {
+                            return Err(EditError::IncompatibleTrackKind {
+                                track: track.kind.as_str().to_string(),
+                                clip: "audio".to_string(),
+                            });
+                        }
+                        track.check_placement(start, end, None)?;
+                        id
+                    }
+                    None => {
+                        // "Audio 1"부터 훑어 자리가 비어 있는 첫 오디오 트랙을 쓴다.
+                        let mut chosen: Option<TrackId> = None;
+                        for track in project.tracks.iter().filter(|t| t.kind == TrackKind::Audio) {
+                            if track.locked {
+                                continue;
+                            }
+                            if track
+                                .check_placement(start, start + duration_ms, None)
+                                .is_ok()
+                            {
+                                chosen = Some(track.id.clone());
+                                break;
+                            }
+                        }
+                        match chosen {
+                            Some(id) => id,
+                            None => {
+                                let name = project.unique_track_name(TrackKind::Audio);
+                                let id = project.mint_track_id();
+                                commands.push(EditCommand::AddTrack {
+                                    track: Track::new(id.clone(), name, TrackKind::Audio),
+                                });
+                                id
+                            }
+                        }
+                    }
+                };
+
+                let audio_id = match new_clip_id {
+                    Some(id) => id,
+                    None => project.mint_clip_id(),
+                };
+                if project.find_clip(&audio_id).is_some() {
+                    return Err(EditError::Invalid(format!(
+                        "이미 존재하는 클립 id입니다: {audio_id}"
+                    )));
+                }
+
+                let mut audio = Clip::new_media(
+                    audio_id,
+                    ClipKind::Audio,
+                    current.source_path.clone(),
+                    current.start_ms,
+                    current.end_ms,
+                );
+                audio.timeline_offset_ms = current.timeline_offset_ms;
+                audio.speed = current.speed;
+                audio.volume = 1.0;
+                audio.opacity = 1.0;
+                audio.fade_in_ms = current.fade_in_ms;
+                audio.fade_out_ms = current.fade_out_ms;
+                audio.source_duration_ms = current.source_duration_ms;
+                audio.validate()?;
+
+                commands.push(EditCommand::AddClip {
+                    track_id: target_id,
+                    clip: audio,
+                });
+                // 원본은 무음 처리한다(추출한 소리와 겹치지 않게).
+                commands.push(EditCommand::SetClipVolume {
+                    track_id,
+                    clip_id,
+                    volume: 0.0,
+                });
+
+                // 한 단계로 적용·되돌리기: 배치가 스크래치 복제본에서 먼저 검증한다.
+                EditCommand::Batch { commands }.apply(project)
+            }
+
+            EditCommand::DuplicateClip {
+                track_id,
+                clip_id,
+                new_clip_id,
+            } => {
+                let current = read_clip(project, &track_id, &clip_id)?;
+                let at = current.timeline_end_ms();
+                let new_id = match new_clip_id {
+                    Some(id) => id,
+                    None => project.mint_clip_id(),
+                };
+                if new_id == current.id {
+                    return Err(EditError::Invalid(
+                        "복제 클립의 id가 원본과 같습니다".into(),
+                    ));
+                }
+                if project.find_clip(&new_id).is_some() {
+                    return Err(EditError::Invalid(format!(
+                        "이미 존재하는 클립 id입니다: {new_id}"
+                    )));
+                }
+                let mut copy = current.clone();
+                copy.id = new_id.clone();
+                copy.timeline_offset_ms = at;
+                copy.validate()?;
+                {
+                    let track = project.track_editable(&track_id)?;
+                    track.check_placement(
+                        copy.timeline_offset_ms,
+                        copy.timeline_offset_ms + copy.timeline_duration_ms(),
+                        None,
+                    )?;
+                }
+                push_clip(project, &track_id, copy)?;
+                Ok(EditCommand::RemoveClip {
+                    track_id,
+                    clip_id: new_id,
+                })
+            }
+
             // ------------------------------------------------------------- subtitles
             EditCommand::AddSubtitle { item } => {
                 item.validate()?;
@@ -698,6 +884,35 @@ pub struct AppliedCommand {
     pub label: String,
     pub command: EditCommand,
     pub inverse: EditCommand,
+    /// 이 커맨드가 새로 만든 클립 id(있으면). UI가 결과 클립을 선택할 때 쓴다.
+    #[serde(default)]
+    pub created_clip_id: Option<String>,
+}
+
+/// 커맨드가 새로 만든 클립 id를 역 커맨드에서 되짚는다.
+///
+/// `ExtractAudio`는 내부 배치(오디오 클립 추가 + 원본 무음)로, `DuplicateClip`은
+/// 단일 `RemoveClip`으로 되돌아가므로 둘 다 역 커맨드에 새 클립 id가 들어 있다.
+fn created_clip_id_of(command: &EditCommand, inverse: &EditCommand) -> Option<String> {
+    match command {
+        EditCommand::ExtractAudio { .. } | EditCommand::DuplicateClip { .. } => {
+            let mut found = None;
+            match inverse {
+                EditCommand::RemoveClip { clip_id, .. } => found = Some(clip_id.to_string()),
+                EditCommand::Batch { commands } => {
+                    for item in commands {
+                        if let EditCommand::RemoveClip { clip_id, .. } = item {
+                            found = Some(clip_id.to_string());
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            found
+        }
+        _ => None,
+    }
 }
 
 /// undo/redo 스택.
@@ -782,10 +997,12 @@ impl History {
     ) -> Result<AppliedCommand, EditError> {
         let label = command.label().to_string();
         let inverse = command.clone().apply(project)?;
+        let created_clip_id = created_clip_id_of(&command, &inverse);
         let applied = AppliedCommand {
             label,
             command,
             inverse,
+            created_clip_id,
         };
         self.undo_stack.push(applied.clone());
         self.redo_stack.clear();
@@ -817,10 +1034,13 @@ impl History {
             return Ok(None);
         };
         let inverse = applied.command.clone().apply(project)?;
+        let created_clip_id = created_clip_id_of(&applied.command, &inverse)
+            .or_else(|| applied.created_clip_id.clone());
         let replayed = AppliedCommand {
             label: applied.label.clone(),
             command: applied.command.clone(),
             inverse,
+            created_clip_id,
         };
         self.undo_stack.push(replayed.clone());
         self.trim();
@@ -842,6 +1062,9 @@ pub struct CommandOutcome {
     pub can_redo: bool,
     pub undo_depth: usize,
     pub redo_depth: usize,
+    /// 이 동작이 새로 만든 클립 id(있으면). UI가 결과 클립을 바로 선택한다.
+    #[serde(default)]
+    pub created_clip_id: Option<String>,
 }
 
 impl CommandOutcome {
@@ -850,10 +1073,12 @@ impl CommandOutcome {
         label: impl Into<String>,
         project: &Project,
         history: &History,
+        created_clip_id: Option<String>,
     ) -> Self {
         Self {
             label: label.into(),
             action: action.to_string(),
+            created_clip_id,
             duration_ms: project.duration_ms(),
             track_count: project.tracks.len(),
             clip_count: project.tracks.iter().map(|t| t.clips.len()).sum(),
@@ -1358,5 +1583,284 @@ mod tests {
         assert_eq!(p.tracks.len(), 4);
         inverse.apply(&mut p).expect("remove track");
         assert_eq!(p.tracks.len(), 3);
+    }
+
+    // ------------------------------------------------------- v0.1.8: 오디오 추출
+
+    #[test]
+    fn extract_audio_copies_trim_speed_and_position() {
+        let mut p = project();
+        let video = p.tracks[0].id.clone();
+        let mut clip = new_clip(&mut p, 500, 1_000, 5_000);
+        clip.speed = 1.5;
+        clip.fade_in_ms = 200;
+        clip.source_duration_ms = Some(8_000);
+        let clip_id = clip.id.clone();
+        EditCommand::AddClip {
+            track_id: video.clone(),
+            clip,
+        }
+        .apply(&mut p)
+        .expect("add video");
+
+        let mut history = History::default();
+        // history 로 적용하면 생성 id 도 함께 돌아온다.
+        let applied = history
+            .apply(
+                EditCommand::ExtractAudio {
+                    track_id: video.clone(),
+                    clip_id: clip_id.clone(),
+                    to_track_id: None,
+                    new_clip_id: None,
+                },
+                &mut p,
+            )
+            .expect("extract");
+        let audio_id = applied
+            .created_clip_id
+            .clone()
+            .expect("오디오 클립 id 가 발급된다");
+
+        // 원본은 무음이 된다.
+        let source = p.tracks[0].clip(&clip_id).expect("video clip");
+        assert_eq!(source.volume, 0.0);
+
+        // Audio 1 에 같은 구간·배속으로 소리만 놓인다.
+        assert_eq!(p.tracks[1].clips.len(), 1);
+        let audio = &p.tracks[1].clips[0];
+        assert_eq!(audio.id.to_string(), audio_id);
+        assert_eq!(audio.kind, ClipKind::Audio);
+        assert_eq!(audio.source_path, "/media/a.mp4");
+        assert_eq!((audio.start_ms, audio.end_ms), (1_000, 5_000));
+        assert_eq!(audio.timeline_offset_ms, 500);
+        assert!((audio.speed - 1.5).abs() < 1e-6);
+        assert_eq!(audio.volume, 1.0, "추출한 소리는 원본 게인으로 들린다");
+        assert_eq!(audio.fade_in_ms, 200);
+        assert_eq!(p.duration_ms(), 3_167);
+
+        // 되돌리기 한 번으로 오디오 클립이 사라지고 원본 볼륨이 복구된다.
+        history.undo(&mut p).expect("undo").expect("some");
+        assert_eq!(p.tracks[1].clips.len(), 0);
+        assert_eq!(p.tracks[0].clip(&clip_id).unwrap().volume, 1.0);
+
+        history.redo(&mut p).expect("redo").expect("some");
+        assert_eq!(p.tracks[1].clips.len(), 1);
+        assert_eq!(p.tracks[0].clip(&clip_id).unwrap().volume, 0.0);
+    }
+
+    #[test]
+    fn extract_audio_uses_next_free_track_and_adds_one_when_needed() {
+        let mut p = project();
+        let video = p.tracks[0].id.clone();
+        let audio1 = p.tracks[1].id.clone();
+        let clip = new_clip(&mut p, 0, 0, 2_000);
+        let clip_id = clip.id.clone();
+        EditCommand::AddClip {
+            track_id: video.clone(),
+            clip,
+        }
+        .apply(&mut p)
+        .expect("add video");
+
+        // Audio 1 의 같은 구간을 이미 쓰고 있으면 새 오디오 트랙을 만든다.
+        let mut bgm = Clip::new_media(
+            p.mint_clip_id(),
+            ClipKind::Audio,
+            "/media/bgm.m4a",
+            0,
+            2_000,
+        );
+        bgm.timeline_offset_ms = 0;
+        EditCommand::AddClip {
+            track_id: audio1,
+            clip: bgm,
+        }
+        .apply(&mut p)
+        .expect("add bgm");
+
+        let inverse = EditCommand::ExtractAudio {
+            track_id: video,
+            clip_id,
+            to_track_id: None,
+            new_clip_id: None,
+        }
+        .apply(&mut p)
+        .expect("extract");
+
+        assert_eq!(p.tracks.len(), 4);
+        assert_eq!(p.tracks[3].name, "Audio 2");
+        assert_eq!(p.tracks[3].clips.len(), 1);
+        assert_eq!(p.tracks[3].clips[0].kind, ClipKind::Audio);
+
+        inverse.apply(&mut p).expect("undo extract");
+        assert_eq!(p.tracks.len(), 3, "되돌리면 만든 트랙도 사라진다");
+    }
+
+    #[test]
+    fn extract_audio_rejects_non_video_and_explicit_wrong_track() {
+        let mut p = project();
+        let overlay = p.tracks[2].id.clone();
+        let text = Clip::new_text(p.mint_clip_id(), TextOverlay::new("안녕"), 1_000);
+        let text_id = text.id.clone();
+        EditCommand::AddClip {
+            track_id: overlay.clone(),
+            clip: text,
+        }
+        .apply(&mut p)
+        .expect("add text");
+
+        let err = EditCommand::ExtractAudio {
+            track_id: overlay.clone(),
+            clip_id: text_id,
+            to_track_id: None,
+            new_clip_id: None,
+        }
+        .apply(&mut p)
+        .unwrap_err();
+        assert!(matches!(err, EditError::Unsupported(_)));
+
+        let video = p.tracks[0].id.clone();
+        let clip = new_clip(&mut p, 0, 0, 2_000);
+        let clip_id = clip.id.clone();
+        EditCommand::AddClip {
+            track_id: video.clone(),
+            clip,
+        }
+        .apply(&mut p)
+        .expect("add video");
+
+        // 비디오 트랙을 대상으로 지정하면 거절한다(상태는 그대로).
+        let err = EditCommand::ExtractAudio {
+            track_id: video.clone(),
+            clip_id: clip_id.clone(),
+            to_track_id: Some(overlay),
+            new_clip_id: None,
+        }
+        .apply(&mut p)
+        .unwrap_err();
+        assert!(matches!(err, EditError::IncompatibleTrackKind { .. }));
+        assert_eq!(p.tracks[0].clip(&clip_id).unwrap().volume, 1.0);
+        assert_eq!(p.tracks[1].clips.len(), 0);
+    }
+
+    #[test]
+    fn extract_audio_keeps_audio_silent_when_source_track_is_muted_then_unmuted() {
+        // 볼륨 0 인 영상에서도 추출은 가능하고, 추출한 소리로 다시 들을 수 있다.
+        let mut p = project();
+        let video = p.tracks[0].id.clone();
+        let mut clip = new_clip(&mut p, 0, 0, 1_000);
+        clip.volume = 0.0;
+        let clip_id = clip.id.clone();
+        EditCommand::AddClip {
+            track_id: video.clone(),
+            clip,
+        }
+        .apply(&mut p)
+        .expect("add video");
+
+        EditCommand::ExtractAudio {
+            track_id: video,
+            clip_id,
+            to_track_id: None,
+            new_clip_id: None,
+        }
+        .apply(&mut p)
+        .expect("extract");
+        assert_eq!(p.tracks[1].clips[0].volume, 1.0);
+        assert_eq!(p.tracks[1].clips[0].source_path, "/media/a.mp4");
+    }
+
+    #[test]
+    fn duplicate_clip_places_copy_after_original() {
+        let mut p = project();
+        let track = video_track(&p);
+        let clip = new_clip(&mut p, 0, 0, 1_000);
+        let clip_id = clip.id.clone();
+        EditCommand::AddClip {
+            track_id: track.clone(),
+            clip,
+        }
+        .apply(&mut p)
+        .expect("add");
+
+        let mut history = History::default();
+        let applied = history
+            .apply(
+                EditCommand::DuplicateClip {
+                    track_id: track.clone(),
+                    clip_id: clip_id.clone(),
+                    new_clip_id: None,
+                },
+                &mut p,
+            )
+            .expect("duplicate");
+        let copy_id = applied.created_clip_id.expect("created id");
+        assert_eq!(p.tracks[0].clips.len(), 2);
+        let copy = p.tracks[0]
+            .clips
+            .iter()
+            .find(|c| c.id.to_string() == copy_id)
+            .expect("copy");
+        assert_eq!(copy.timeline_offset_ms, 1_000);
+        assert_eq!(copy.start_ms, 0);
+        assert_eq!(p.duration_ms(), 2_000);
+
+        history.undo(&mut p).expect("undo").expect("some");
+        assert_eq!(p.tracks[0].clips.len(), 1);
+    }
+
+    #[test]
+    fn rename_project_roundtrip() {
+        let mut p = project();
+        let inverse = EditCommand::RenameProject {
+            name: " 상하이 마라톤 ".into(),
+        }
+        .apply(&mut p)
+        .expect("rename");
+        assert_eq!(p.name, "상하이 마라톤");
+        inverse.apply(&mut p).expect("undo rename");
+        assert_eq!(p.name, "테스트");
+
+        let err = EditCommand::RenameProject { name: "  ".into() }
+            .apply(&mut p)
+            .unwrap_err();
+        assert!(matches!(err, EditError::Invalid(_)));
+    }
+
+    #[test]
+    fn text_clip_can_be_split_into_two_windows() {
+        let mut p = project();
+        let overlay = p.tracks[2].id.clone();
+        let mut text = Clip::new_text(p.mint_clip_id(), TextOverlay::new("안녕"), 2_000);
+        text.timeline_offset_ms = 0;
+        let text_id = text.id.clone();
+        EditCommand::AddClip {
+            track_id: overlay.clone(),
+            clip: text,
+        }
+        .apply(&mut p)
+        .expect("add text");
+
+        let inverse = EditCommand::SplitClip {
+            track_id: overlay,
+            clip_id: text_id.clone(),
+            at_timeline_ms: 800,
+            right_clip_id: Some(ClipId::new("clp-text-right")),
+        }
+        .apply(&mut p)
+        .expect("split text");
+
+        let clips = &p.tracks[2].clips;
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[0].end_ms, 800);
+        assert_eq!(clips[0].timeline_duration_ms(), 800);
+        assert_eq!(clips[1].start_ms, 800);
+        assert_eq!(clips[1].timeline_offset_ms, 800);
+        assert_eq!(clips[1].timeline_duration_ms(), 1_200);
+        assert_eq!(clips[1].text.as_ref().unwrap().content, "안녕");
+
+        inverse.apply(&mut p).expect("undo split");
+        assert_eq!(p.tracks[2].clips.len(), 1);
+        assert_eq!(p.tracks[2].clips[0].end_ms, 2_000);
     }
 }
