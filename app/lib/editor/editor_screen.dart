@@ -204,10 +204,13 @@ class _EditorScreenState extends State<EditorScreen> {
     await _pickAndAddMedia();
   }
 
-  /// 오디오 파일 추가(오디오 트랙). 미디어 선택기에서 파일을 고르면 프로브가
-  /// 종류를 판단해 오디오 클립으로 넣는다.
+  /// 오디오 파일 추가(오디오 트랙).
+  ///
+  /// `FileType.media` 는 iOS 에서 사진/영상만 보여 주므로(오디오 선택 불가),
+  /// 오디오는 `FileType.audio` 로 따로 연다. 고른 파일은 프로브가 종류를 판단해
+  /// 오디오 트랙에 놓인다.
   Future<void> _addAudio() async {
-    await _pickAndAddMedia(preferAudio: true);
+    await _pickAndAddMedia(audioOnly: true);
   }
 
   /// 오버레이 트랙에 사진/영상을 얹는다(프로젝트의 첫 오버레이 트랙).
@@ -224,13 +227,15 @@ class _EditorScreenState extends State<EditorScreen> {
 
   Future<void> _pickAndAddMedia({
     String? trackId,
-    bool preferAudio = false,
+    bool audioOnly = false,
   }) async {
     _pauseForEdit();
     PlatformFile? picked;
     try {
       // file_picker 13: FilePicker.pickFile()는 정적 메서드이고 PlatformFile?을 돌려준다.
-      picked = await FilePicker.pickFile(type: FileType.media);
+      picked = await FilePicker.pickFile(
+        type: audioOnly ? FileType.audio : FileType.media,
+      );
     } catch (_) {
       // 데스크톱/샌드박스에서 플러그인이 없을 수 있다.
       if (mounted) {
