@@ -255,7 +255,6 @@ class _TimelineViewState extends State<TimelineView> {
     }
   }
 
-  double _dragStartDx = 0;
   double _dragDeltaPx = 0;
 
   void _onScaleEnd(ScaleEndDetails details) {
@@ -397,7 +396,6 @@ class _TimelineViewState extends State<TimelineView> {
         final Widget canvas = Listener(
           onPointerDown: (PointerDownEvent event) {
             _pointerDownLocal = event.localPosition;
-            _dragStartDx = event.localPosition.dx;
           },
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
