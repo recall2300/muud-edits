@@ -66,7 +66,7 @@ Windows · macOS · Android · iOS.
 * **컨테이너** — `EditorSection` + 1px `Divider` + 단일 패딩 라인. 카드 안의 카드 없음.
   영역마다 lead 하나와 primary action 하나(상단 바의 "내보내기")만 강조한다.
 * **회귀 테스트** — `app/test/theme_tokens_test.dart`, `editor_layout_test.dart`,
-  `inspector_panel_test.dart` (총 72개 위젯/단위 테스트).
+  `inspector_panel_test.dart` (총 73개 위젯/단위 테스트).
 
 ## 지금 바로 확인할 수 있는 것
 
@@ -168,7 +168,7 @@ muud-edits/
     │                          timeline_view, inspector_panel, preview_engine
     ├── lib/src/rust/          flutter_rust_bridge 코드젠 바인딩(커밋됨)
     ├── lib/rust_core_loader.dart  플랫폼별 코어 라이브러리 로딩
-    ├── test/                  FFI 실연결 + UI 흐름/토큰/반응형 레이아웃 위젯 테스트(72개)
+    ├── test/                  FFI 실연결 + UI 흐름/토큰/반응형 레이아웃 위젯 테스트(73개)
     └── native/                apple(Swift) · android(Kotlin) · windows(C++) 미디어 엔진
 ```
 
