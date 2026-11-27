@@ -128,8 +128,11 @@ class MuudMediaPlugin private constructor(
                         "api" to "MediaCodec + MediaMuxer (Media3 Transformer)",
                         "engine" to "androidx.media3.transformer",
                         "supports_export" to true,
-                        "supports_text_burn_in" to false,
-                        "supports_image_clips" to false,
+                        // 자막·텍스트는 OverlayEffect 번인으로, 사진은 MediaItem
+                        // 이미지 입력으로 내보낸다.
+                        "supports_text_burn_in" to true,
+                        "supports_image_clips" to true,
+                        "supports_multi_layer" to false,
                         "sdk_int" to version,
                         "hardware_video_encoders" to codecs,
                         "platform" to "android",
