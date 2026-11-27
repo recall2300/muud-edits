@@ -15,7 +15,7 @@ Windows · macOS · Android · iOS.
 
 ---
 
-## 미리보기·내보내기 현재 상태 (v0.1.5)
+## 미리보기·내보내기 현재 상태 (v0.1.6)
 
 | 기능 | 상태 |
 |---|---|
@@ -28,10 +28,14 @@ Windows · macOS · Android · iOS.
 | 별도 오디오 트랙 · 클립 볼륨/음소거 | ✅ (플레이어 볼륨 0~100%) |
 | 프로젝트 저장/열기(`.muudproj`) | ✅ 저장 시 Downloads(Android 10+)로도 복사, 공유 가능 |
 | Android 내보내기 | ✅ Media3 Transformer — 영상 컷/병합 + 원본 음성, 완료 후 MediaStore(갤러리/다운로드)로 공개 + 공유/열기 |
-| 자막·텍스트 영상에 새기기(burn-in) | ❌ 이번 버전은 미리보기에만. 내보내기 시트에 명시 |
-| 사진 클립 내보내기 | ❌ Android Transformer 경로에서 제외(시트에 명시) |
+| 빈 구간(클립 사이 공백) | ✅ 안드로이드 `addGap`, Windows `color`+`adelay` — 검은 화면·무음으로 채워 영상/자막/오디오 싱크 유지 (v0.1.6) |
+| 배속 | ✅ Windows 는 `setpts` 1회만(이전 2중 적용 버그 수정), Android 는 SpeedChange+Sonic (v0.1.6) |
+| 자막·텍스트 영상에 새기기(burn-in) | ✅ iOS/macOS(AVFoundation 레이어) · Windows(SRT+subtitles 필터) · Android(OverlayEffect) |
+| 사진 클립 내보내기 | ✅ Android(`setImageDurationMs`) · iOS/macOS — ⚠️ Windows 는 아직 영상만 합성(시트에 명시) |
+| 오디오 볼륨(gain) | ✅ Android 는 muted 뿐 아니라 실제 gain 반영(v0.1.6). 미리보기는 플랫폼 한계로 0~1.0 |
 | Windows/macOS/iOS 내보내기 | ⚠️ 네이티브 구현은 있고 CI 빌드는 통과하지만, 실기기 검증은 아직 |
-| 타임라인 줌/스크롤 | ❌ 한 화면에 전체 길이를 맞춰 그린다 |
+| 타임라인 줌/스크롤 · 드래그 편집 | ✅ 핀치 줌(0.25~24x)·가로/세로 스크롤, 클립 본체 드래그=이동, 좌우 핸들=트림 (v0.1.6) |
+| 트랙 음소거/숨김/잠금 | ✅ 타임라인 왼쪽 거터 토글 |
 
 > 미리보기는 "지금 재생 헤드에 해당하는 클립 하나"를 플레이어에 물려 재생한다.
 > **재생 중에는 플레이어가 시계**이고(플레이어가 알려 주는 위치를 100ms 사이만 벽시계로

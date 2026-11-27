@@ -278,6 +278,30 @@ Flutter 앱 UI 는 그대로이고(Impeller opt-out 은 3.38+ 에서 deprecated 
 
 남은 2단계 과제: 여러 레이어 동시 합성, 프록시 캐시, 오디오 마스터 클록, 자막 burn-in.
 
+### v0.1.6 — 트림 첫 시크·빈 구간·오버레이 아래 소리
+
+| 문제 | 바꾼 것 |
+|---|---|
+| 트림 클립(`start_ms>0`)으로 처음 들어갈 때 재생 헤드가 0ms 로 튀었다 멈췄다 | 시크 직후 플랫폼은 아직 0(갱신 전 위치)을 보고한다. `_playerTimelineMs` 가 시크 목표에 미치지 못한 보고(200ms 여유)를 무시하고 **벽시계로 계속 흐른다**. 목표에 가까워지면 그때부터 플레이어가 시계가 된다(1.5초 타임아웃) |
+| 위 트랙에서 이미지를 고르면 아래 영상의 오디오까지 사라졌다 | `resolvePreviewSelection` 이 별도 오디오 트랙이 없을 때 **아래 비디오 클립의 소리**를 `audioClip` 으로 고른다(`audioFromVideoTrack`) |
+| 클립 끝을 지나 빈 구간에 들어가면 플레이어를 dispose 해, 돌아올 때 다시 열었다 | 빈 구간에서는 `pause` 만 하고 유지한다. `surface` getter 는 빈 구간에서 `null`("이 구간에는 영상이 없습니다"), dispose 는 다른 파일을 열거나 엔진이 끝날 때만 |
+| 열기/시크가 진행 중인데 틱이 `_sync` 를 다시 쌓았다 | `_needsSync` 가 `_openingVisual`·`_openingAudio`·`_seekInFlight` 동안 false |
+| 클립 볼륨 2.0 이 미리보기에서 조용히 1.0 이 됐다 | `previewVolumeCeiling=1.0` 상수로 명시(플랫폼 `video_player` 한계). 1.0 초과는 내보내기 그래프의 `gain` 에서만 반영 |
+
+### 타임라인 조작 (v0.1.6)
+
+`TimelineMetrics` 가 `zoom`·`scrollMs` 를 받아 **그리기와 히트 테스트가 같은 좌표
+규칙**을 쓴다(`xForTime` / `timeAt` / `hitTestClip` / `toggleRect`).
+
+* 핀치 줌과 줌 인/아웃/전체맞춤 버튼(0.25x ~ 24x), 재생 헤드를 따라가는 가로 스크롤,
+  트랙이 화면보다 많으면 세로 스크롤.
+* 클립 본체 드래그 = `moveClip`, 좌/우 끝 핸들 드래그 = `trimClip`.
+  드래그 중에는 `TimelineDragPreview` 로 화면만 바꾸고 **손을 뗄 때 커맨드 1회**.
+  핸들 판정은 pointer-down 좌표를 쓴다(제스처 슬롭 18px 때문에 `onScaleStart` 좌표는
+  누른 지점이 아니다).
+* 좌측 거터의 음소거/숨김/잠금 토글 → `setTrackState`.
+* 인스펙터에서 `kind == 'text'` 클립 문구를 직접 고쳐 `set_clip_text` 1회.
+
 ---
 
 ## 8. 내보내기 파이프라인 ✅(계획·그래프) / ✅(네이티브 1차 구현) / 🔜(기기 검증)
@@ -341,6 +365,22 @@ Queued → Preparing → Rendering → Finalizing → Completed
 | **FFmpeg 폴백** | 네이티브 실패, 특수 코덱/필터 | `ExportPlan.ffmpeg_args`를 그대로 프로세스에 전달 |
 
 네이티브 구현 위치와 세부 한계는 `app/native/README.md`에, 연결 방법은 `docs/LOCAL_SETUP.md`에 있다.
+
+#### 8.3.1 빈 구간·배속·오디오 위치 (v0.1.6)
+
+세그먼트 사이에 빈 구간이 있으면 **렌더러가 그 길이를 채워야** 영상·자막·오디오가
+어긋나지 않는다. v0.1.6에서 두 네이티브 경로를 이 규칙으로 맞췄다.
+
+| 경로 | 빈 구간 | 오디오 위치 | 배속 |
+|---|---|---|---|
+| Windows(ffmpeg) | `color=c=black:r=fps:d=…` 를 끼워 concat | `adelay` + `apad` + `amix`(normalize=0) 로 출력 시각에 배치 | `setpts=(PTS-STARTPTS)/speed` **한 번만** (이전에는 `render_ms/(out-in)` 을 더 곱해 2중 적용) |
+| Android(Media3) | `EditedMediaItemSequence.addGap(durationUs)` (검은 프레임+무음) | 겹치지 않는 오디오는 레인별 시퀀스로 나눠 각 시퀀스 앞에 gap 을 넣고, 여러 레인은 Media3 가 믹싱 | `SpeedChangeEffect`(영상) + `SonicAudioProcessor`(소리) |
+
+Android 는 이번 버전에서 **사진 클립**(`MediaItem.setImageDurationMs` +
+`EditedMediaItem.setFrameRate`), **오디오 게인**(0~4, PCM16 포화 프로세서),
+**자막·텍스트 번인**(`BitmapOverlay` + `OverlayEffect`, 아이템 로컬 시간 창)까지
+지원한다. 아직 맨 아래 비디오 레이어만 합성한다(위 레이어 영상은 제외 — 내보내기
+시트에 명시).
 
 * 워터마크: **없음이 제품 원칙**. `ExportSettings.watermark`는 `true`면 검증에서 거부되는
   잠금장치이고, 인자 생성기에 워터마크/`drawtext` 필터를 넣는 코드 경로 자체가 없다
